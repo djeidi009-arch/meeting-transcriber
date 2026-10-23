@@ -1,0 +1,89 @@
+import Foundation
+import DetectorCore
+
+/// Фейковый «python»: пишет в лог, работает 0.3 с, падает на папках со словом bad.
+func makeFakePython(in root: URL, log: URL) throws -> URL {
+    let script = root.appendingPathComponent("fake-python")
+    let body = """
+    #!/bin/sh
+    # $1=-m $2=transcriber $3=process|resummarize $4=dir
+    echo "start $3 $(basename "$4") cwd=$(pwd) path=$PATH" >> "\(log.path)"
+    sleep 0.3
+    case "$4" in
+      *bad2*) printf "Summary не удалось: таймаут\\nподробности\\n" > "$4/error.txt"; echo "трейсбек" >&2; exit 1;;
+      *bad*) echo "прогресс 50%" >&2; echo "Не удалось расшифровать: нет ffmpeg" >&2; echo "end $3 $(basename "$4")" >> "\(log.path)"; exit 1;;
+    esac
+    echo "end $3 $(basename "$4")" >> "\(log.path)"
+    exit 0
+    """
+    try body.data(using: .utf8)!.write(to: script)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+    return script
+}
+
+enum QueueTests {
+    static func all() {
+        test("очередь: по одной, cwd — проект, PATH с папкой claude, ошибка с текстом") {
+            let root = tempDir("queue")
+            let project = root.appendingPathComponent("project")
+            try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+            let log = root.appendingPathComponent("log.txt")
+            let python = try makeFakePython(in: root, log: log)
+            let lock = NSLock()
+            var results: [(String, ProcessingQueue.Kind, ProcessingQueue.Outcome)] = []
+            var busyChanges: [Bool] = []
+            let queue = ProcessingQueue(pythonPath: python.path, projectDir: project,
+                                        extraPath: ["/opt/claude-bin"],
+                                        onBusyChange: { b in lock.lock(); busyChanges.append(b); lock.unlock() },
+                                        onFinish: { job, outcome in
+                                            lock.lock(); results.append((job.dir.lastPathComponent, job.kind, outcome)); lock.unlock()
+                                        })
+            let a = root.appendingPathComponent("A"), bad = root.appendingPathComponent("bad"), c = root.appendingPathComponent("C")
+            queue.enqueue(a)
+            queue.enqueue(bad)
+            queue.enqueue(a) // дубликат, пока A в очереди
+            queue.enqueue(c, kind: .resummarize)
+            check(queue.isBusy, "занята сразу после постановки")
+            check(queue.waitUntilIdle(timeout: 10), "очередь отработала")
+            check(!queue.isBusy, "свободна")
+
+            let lines = (try? String(contentsOf: log, encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
+            let order = lines.map { $0.split(separator: " ").prefix(3).joined(separator: " ") }
+            check(order == ["start process A", "end process A", "start process bad", "end process bad",
+                            "start resummarize C", "end resummarize C"], "строго по одной: \(order)")
+            check(lines.first?.contains("cwd=\(project.path)") == true || lines.first?.contains("cwd=/private\(project.path)") == true, "cwd — проект: \(lines.first ?? "")")
+            check(lines.first?.contains("path=/opt/claude-bin:") == true, "PATH начинается с папки claude: \(lines.first ?? "")")
+            check(results.count == 3, "три результата: \(results.count)")
+            if results.count == 3 {
+                if case .success = results[0].2 {} else { check(false, "A — успех") }
+                if case .failure(let msg) = results[1].2 {
+                    check(msg == "Не удалось расшифровать: нет ффмпег".replacingOccurrences(of: "ффмпег", with: "ffmpeg"), "текст ошибки — последняя строка stderr: \(msg)")
+                } else { check(false, "bad — ошибка") }
+                check(results[2].1 == .resummarize, "вид задания сохраняется")
+            }
+            check(busyChanges.first == true && busyChanges.last == false, "оповещения о занятости: \(busyChanges)")
+        }
+
+        test("очередь: error.txt важнее stderr, нет python — понятная ошибка") {
+            let root = tempDir("queue2")
+            let log = root.appendingPathComponent("log.txt")
+            let python = try makeFakePython(in: root, log: log)
+            let bad = root.appendingPathComponent("bad2")
+            try FileManager.default.createDirectory(at: bad, withIntermediateDirectories: true)
+            // старый error.txt от прошлой попытки не должен попасть в уведомление
+            try "старая ошибка".data(using: .utf8)!.write(to: bad.appendingPathComponent("error.txt"))
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-600)], ofItemAtPath: bad.appendingPathComponent("error.txt").path)
+            var outcome: ProcessingQueue.Outcome?
+            let q = ProcessingQueue(pythonPath: python.path, projectDir: root, onFinish: { _, o in outcome = o })
+            q.enqueue(bad)
+            _ = q.waitUntilIdle(timeout: 10)
+            if case .failure(let msg) = outcome { check(msg == "Summary не удалось: таймаут", "из error.txt: \(msg)") } else { check(false, "ошибка ожидалась") }
+
+            var outcome2: ProcessingQueue.Outcome?
+            let q2 = ProcessingQueue(pythonPath: "/nonexistent/python", projectDir: root, onFinish: { _, o in outcome2 = o })
+            q2.enqueue(root.appendingPathComponent("X"))
+            _ = q2.waitUntilIdle(timeout: 10)
+            if case .failure(let msg) = outcome2 { check(msg.contains("/nonexistent/python"), "ошибка называет путь: \(msg)") } else { check(false, "ошибка ожидалась") }
+        }
+    }
+}
