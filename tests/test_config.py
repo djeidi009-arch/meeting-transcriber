@@ -35,3 +35,16 @@ def test_load_broken_json_gives_defaults(tmp_path):
     path = tmp_path / "config.json"
     path.write_text("{oops")
     assert load(path).language == "ru"
+
+
+def test_load_expands_tilde_in_all_paths(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({
+        "outputDir": "~/meetings",
+        "claudePath": "~/.local/bin/claude",
+        "pythonPath": "~/proj/.venv/bin/python",
+    }))
+    cfg = load(path)
+    assert cfg.output_dir == Path.home() / "meetings"
+    assert cfg.claude_path == str(Path.home() / ".local/bin/claude")
+    assert cfg.python_path == str(Path.home() / "proj/.venv/bin/python")

@@ -82,7 +82,9 @@ def _track_source(meeting_dir: Path, track: str) -> Path | None:
     return None
 
 
-def _process(meeting_dir: Path, cfg: Config, asr: AsrFn, diarize: DiarizeFn, summarize: SummarizeFn) -> None:
+def _process(
+    meeting_dir: Path, cfg: Config, asr: AsrFn, diarize: DiarizeFn, summarize: SummarizeFn
+) -> str | None:
     if (meeting_dir / ".recording").exists():
         raise ProcessingError("Запись ещё идёт (есть маркер .recording)")
     meta = _read_meta(meeting_dir)
@@ -120,6 +122,7 @@ def _process(meeting_dir: Path, cfg: Config, asr: AsrFn, diarize: DiarizeFn, sum
         caf = meeting_dir / f"{track}.caf"
         if caf.exists() and ((meeting_dir / f"{track}.m4a").exists() or caf.stat().st_size <= audio.HEADER_ONLY_BYTES):
             caf.unlink()
+    return summary_error
 
 
 def _record_error(meeting_dir: Path, exc: Exception) -> None:
@@ -143,14 +146,17 @@ def process(
     asr: AsrFn | None = None,
     diarize: DiarizeFn | None = None,
     summarize: SummarizeFn | None = None,
-) -> None:
-    """Обработать папку встречи. Уже обработанная (есть meeting.md) — ничего не делает."""
+) -> str | None:
+    """Обработать папку встречи. Уже обработанная (есть meeting.md) — ничего не делает.
+
+    Возвращает причину сбоя summary (транскрипт при этом готов) или None.
+    """
     meeting_dir = Path(meeting_dir)
     _check_dir(meeting_dir)
     if (meeting_dir / "meeting.md").exists():
-        return
+        return None
     try:
-        _process(meeting_dir, cfg, asr or _default_asr, diarize or _default_diarize, summarize or _default_summarize)
+        return _process(meeting_dir, cfg, asr or _default_asr, diarize or _default_diarize, summarize or _default_summarize)
     except Exception as exc:
         _record_error(meeting_dir, exc)
         raise

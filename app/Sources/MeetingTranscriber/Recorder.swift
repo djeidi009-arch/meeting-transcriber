@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreGraphics
 import CoreMedia
+import DetectorCore
 import ScreenCaptureKit
 
 enum RecorderError: LocalizedError {
@@ -50,14 +51,20 @@ enum Permissions {
 }
 
 /// Пишет одну дорожку в CAF (16 бит PCM, частота и каналы — как пришли от ScreenCaptureKit).
+/// Позиция в файле следует PTS буферов: задержка начала дорожки относительно старта записи
+/// и пропуски в потоке заполняются тишиной (расчёт — `TrackAligner` в DetectorCore).
 private final class TrackWriter {
     let url: URL
+    private let clock: RecordingClock
+    private var aligner: TrackAligner?
     private var file: AVAudioFile?
     private var converter: AVAudioConverter?
-    private(set) var framesWritten: AVAudioFramePosition = 0
     private(set) var lastError: Error?
 
-    init(url: URL) { self.url = url }
+    init(url: URL, clock: RecordingClock) {
+        self.url = url
+        self.clock = clock
+    }
 
     func append(_ sampleBuffer: CMSampleBuffer) {
         guard sampleBuffer.isValid, CMSampleBufferGetNumSamples(sampleBuffer) > 0,
@@ -85,14 +92,35 @@ private final class TrackWriter {
                 file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
             }
             guard let file else { return }
-            if pcm.format == file.processingFormat {
-                try file.write(from: pcm)
-            } else {
-                try file.write(from: convert(pcm, to: file.processingFormat))
+            if aligner == nil { aligner = TrackAligner(sampleRate: file.processingFormat.sampleRate) }
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            if pts.isValid, pts.isNumeric, let silence = aligner?.silenceFrames(beforeBufferAt: pts.seconds, clock: clock),
+               silence > 0 {
+                try writeSilence(frames: silence, to: file)
             }
-            framesWritten += AVAudioFramePosition(frames)
+            let out = pcm.format == file.processingFormat ? pcm : try convert(pcm, to: file.processingFormat)
+            try file.write(from: out)
+            aligner?.didWrite(frames: Int64(out.frameLength))
         } catch {
             lastError = error
+        }
+    }
+
+    private func writeSilence(frames: Int64, to file: AVAudioFile) throws {
+        let format = file.processingFormat
+        let chunk: AVAudioFrameCount = 48_000
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunk) else {
+            throw RecorderError.failed("нет буфера")
+        }
+        let list = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        var left = frames
+        while left > 0 {
+            let n = AVAudioFrameCount(min(Int64(chunk), left))
+            buffer.frameLength = n
+            for b in list { if let data = b.mData { memset(data, 0, Int(b.mDataByteSize)) } }
+            try file.write(from: buffer)
+            aligner?.didWrite(frames: Int64(n))
+            left -= Int64(n)
         }
     }
 
@@ -167,8 +195,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         config.queueDepth = 3
 
-        system = TrackWriter(url: dir.appendingPathComponent("system.caf"))
-        mic = TrackWriter(url: dir.appendingPathComponent("mic.caf"))
+        // Общий старт записи в шкале часов хоста (в ней же PTS буферов ScreenCaptureKit).
+        let clock = RecordingClock(startTime: CMClockGetTime(CMClockGetHostTimeClock()).seconds)
+        system = TrackWriter(url: dir.appendingPathComponent("system.caf"), clock: clock)
+        mic = TrackWriter(url: dir.appendingPathComponent("mic.caf"), clock: clock)
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         do {
@@ -212,10 +242,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         guard self.stream === stream else { return }
         self.stream = nil
+        // Сообщить о сбое только после закрытия файлов: встречу сразу ставят в очередь обработки.
         audioQueue.async { [self] in
             system?.close(); mic?.close()
             system = nil; mic = nil
+            onUnexpectedStop?(error)
         }
-        onUnexpectedStop?(error)
     }
 }

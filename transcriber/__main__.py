@@ -7,6 +7,10 @@ from pathlib import Path
 
 from . import config, pipeline
 
+# Код выхода: встреча расшифрована, meeting.md записан, но summary не получилось.
+# Swift-часть (ProcessingQueue) показывает по нему уведомление «Меню → Повторить summary».
+EXIT_SUMMARY_FAILED = 2
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="transcriber", description="Обработка записи встречи")
@@ -17,7 +21,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = config.load()
         if args.command == "process":
-            pipeline.process(args.meeting_dir, cfg)
+            summary_error = pipeline.process(args.meeting_dir, cfg)
+            if summary_error:
+                print(" ".join(f"Summary не удалось сделать: {summary_error}".split()), file=sys.stderr)
+                return EXIT_SUMMARY_FAILED
         else:
             pipeline.resummarize(args.meeting_dir, cfg)
     except KeyboardInterrupt:

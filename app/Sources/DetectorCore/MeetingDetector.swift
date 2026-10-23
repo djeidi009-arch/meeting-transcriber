@@ -22,12 +22,16 @@ public struct DetectorConfig {
     public var titleAppNames: [String: String]
     public var startAfter: TimeInterval
     public var stopAfter: TimeInterval
+    /// Сколько подряд не должно быть признаков встречи, чтобы снялся запрет автостарта после ручной остановки.
+    public var resumeAfter: TimeInterval
 
     public init(appBundlePrefixes: [String: String],
                 titlePatterns: [String],
                 titleAppNames: [String: String] = [:],
                 startAfter: TimeInterval = 5,
-                stopAfter: TimeInterval = 90) {
+                stopAfter: TimeInterval = 90,
+                resumeAfter: TimeInterval = 30) {
+        self.resumeAfter = resumeAfter
         self.appBundlePrefixes = appBundlePrefixes
         self.titlePatterns = titlePatterns
         self.titleAppNames = titleAppNames
@@ -50,6 +54,7 @@ public struct DetectorConfig {
             "com.skype.skype": "Skype",
             "ru.yandex.telemost": "Телемост",
             "ru.yandex.desktop.telemost": "Телемост",
+            "kontur.talk": "Толк", // /Applications/Толк.app; хелперы kontur.talk.* совпадают по префиксу
             "ru.kontur.talk": "Толк",
             "ru.skbkontur.talk": "Толк",
             // Браузеры: хелперы (com.google.Chrome.helper и т.п.) совпадают по префиксу.
@@ -113,6 +118,7 @@ public final class MeetingDetector {
     private var lastEvidence: TimeInterval?
     private var meetingActive = false
     private var suppressed = false
+    private var quietSince: TimeInterval?   // начало текущего отрезка без признаков
 
     public init(config: DetectorConfig) {
         self.config = config
@@ -131,11 +137,17 @@ public final class MeetingDetector {
         } else {
             micSince = nil
         }
-        if evidence { lastEvidence = s.time }
+        if evidence {
+            lastEvidence = s.time
+            quietSince = nil
+        } else if quietSince == nil {
+            quietSince = s.time
+        }
 
-        // После ручной остановки молчим, пока признаки не пропадут полностью.
+        // После ручной остановки молчим, пока признаков нет ≥ resumeAfter подряд
+        // (один пустой опрос — частый сбой CoreAudio — запрет не снимает).
         if suppressed {
-            if evidence { return nil }
+            guard let quiet = quietSince, s.time - quiet >= config.resumeAfter else { return nil }
             suppressed = false
             meetingActive = false
         }
@@ -164,9 +176,11 @@ public final class MeetingDetector {
         return .start(appName: name, bundleID: app.prefix)
     }
 
-    /// Пользователь остановил запись сам (или старт не удался): не стартовать снова до исчезновения признаков.
+    /// Пользователь остановил запись сам (или старт не удался): не стартовать снова,
+    /// пока признаков встречи нет хотя бы `resumeAfter` секунд подряд.
     public func noteManualStop() {
         suppressed = true
+        quietSince = nil
         meetingActive = false
         micSince = nil
     }

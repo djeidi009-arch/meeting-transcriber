@@ -10,6 +10,7 @@ func makeFakePython(in root: URL, log: URL) throws -> URL {
     echo "start $3 $(basename "$4") cwd=$(pwd) path=$PATH" >> "\(log.path)"
     sleep 0.3
     case "$4" in
+      *sumfail*) echo "загрузка модели" >&2; echo "Summary не удалось сделать: истёк таймаут" >&2; exit 2;;
       *bad2*) printf "Summary не удалось: таймаут\\nподробности\\n" > "$4/error.txt"; echo "трейсбек" >&2; exit 1;;
       *bad*) echo "прогресс 50%" >&2; echo "Не удалось расшифровать: нет ffmpeg" >&2; echo "end $3 $(basename "$4")" >> "\(log.path)"; exit 1;;
     esac
@@ -78,6 +79,16 @@ enum QueueTests {
             q.enqueue(bad)
             _ = q.waitUntilIdle(timeout: 10)
             if case .failure(let msg) = outcome { check(msg == "Summary не удалось: таймаут", "из error.txt: \(msg)") } else { check(false, "ошибка ожидалась") }
+
+            let sumfail = root.appendingPathComponent("sumfail")
+            try FileManager.default.createDirectory(at: sumfail, withIntermediateDirectories: true)
+            var outcome3: ProcessingQueue.Outcome?
+            let q3 = ProcessingQueue(pythonPath: python.path, projectDir: root, onFinish: { _, o in outcome3 = o })
+            q3.enqueue(sumfail)
+            _ = q3.waitUntilIdle(timeout: 10)
+            if case .summaryFailed(let msg) = outcome3 {
+                check(msg == "Summary не удалось сделать: истёк таймаут", "причина из stderr: \(msg)")
+            } else { check(false, "код 2 → summaryFailed, а не \(String(describing: outcome3))") }
 
             var outcome2: ProcessingQueue.Outcome?
             let q2 = ProcessingQueue(pythonPath: "/nonexistent/python", projectDir: root, onFinish: { _, o in outcome2 = o })

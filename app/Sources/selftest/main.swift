@@ -49,6 +49,7 @@ DetectorTests.all()
 StoreTests.all()
 ConfigTests.all()
 QueueTests.all()
+AlignerTests.all()
 
 print("\(passed) checks passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -50,6 +51,9 @@ def load(path: Path | None = None) -> Config:
             cfg.summary_timeout_sec = int(value)
         elif attr.startswith("extra_") and isinstance(value, list):
             setattr(cfg, attr, [str(v) for v in value])
-        elif attr in ("language", "claude_path", "python_path") and isinstance(value, str) and value:
-            setattr(cfg, attr, value)
+        elif attr in ("claude_path", "python_path") and isinstance(value, str) and value:
+            # как expandingTildeInPath в Swift: «~/…» → домашняя папка
+            setattr(cfg, attr, os.path.expanduser(value))
+        elif attr == "language" and isinstance(value, str) and value:
+            cfg.language = value
     return cfg

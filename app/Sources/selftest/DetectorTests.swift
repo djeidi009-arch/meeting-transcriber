@@ -83,9 +83,35 @@ enum DetectorTests {
             rec = false
             let again = run(d, from: 8, to: 100, mic: ["us.zoom.xos"], isRecording: &rec)
             check(again.isEmpty, "нет старта, пока Zoom держит мик: \(again)")
-            _ = run(d, from: 102, to: 104, mic: [], isRecording: &rec)
-            let next = run(d, from: 106, to: 120, mic: ["us.zoom.xos"], isRecording: &rec)
+            _ = run(d, from: 102, to: 134, mic: [], isRecording: &rec)
+            let next = run(d, from: 136, to: 150, mic: ["us.zoom.xos"], isRecording: &rec)
             check(next.first?.1 == .start(appName: "Zoom", bundleID: "us.zoom.xos"), "новая встреча стартует")
+        }
+
+        test("ручная остановка: один пустой опрос запрет не снимает, нужны ≥ 30 с без признаков") {
+            let d = MeetingDetector(config: .builtIn)
+            var rec = false
+            _ = run(d, from: 0, to: 6, mic: ["us.zoom.xos"], isRecording: &rec)
+            d.noteManualStop()
+            rec = false
+            _ = run(d, from: 8, to: 20, mic: ["us.zoom.xos"], isRecording: &rec)
+            _ = run(d, from: 22, to: 22, mic: [], isRecording: &rec) // CoreAudio на миг не увидел мик
+            let blip = run(d, from: 24, to: 120, mic: ["us.zoom.xos"], isRecording: &rec)
+            check(blip.isEmpty, "после одного пустого опроса старта нет: \(blip)")
+            _ = run(d, from: 122, to: 148, mic: [], isRecording: &rec) // 26 с без признаков — мало
+            let short = run(d, from: 150, to: 170, mic: ["us.zoom.xos"], isRecording: &rec)
+            check(short.isEmpty, "26 с без признаков запрет не снимают: \(short)")
+            _ = run(d, from: 172, to: 204, mic: [], isRecording: &rec) // 32 с без признаков
+            let next = run(d, from: 206, to: 220, mic: ["us.zoom.xos"], isRecording: &rec)
+            check(next.first?.1 == .start(appName: "Zoom", bundleID: "us.zoom.xos"), "после 30 с тишины новая встреча стартует: \(next)")
+        }
+
+        test("Контур.Толк: kontur.talk и его хелпер → start «Толк»") {
+            check(DetectorConfig.builtIn.match("kontur.talk")?.name == "Толк", "kontur.talk в списке")
+            let d = MeetingDetector(config: .builtIn)
+            var rec = false
+            let ev = run(d, from: 0, to: 6, mic: ["kontur.talk.helper"], isRecording: &rec)
+            check(ev.first?.1 == .start(appName: "Толк", bundleID: "kontur.talk"), "start Толк: \(ev)")
         }
 
         test("автостарт выключен → нет start") {

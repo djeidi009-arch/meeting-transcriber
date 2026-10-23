@@ -10,8 +10,13 @@ public final class ProcessingQueue {
         public let kind: Kind
     }
 
+    /// Код выхода `python -m transcriber process`: транскрипт готов, но summary не получилось.
+    public static let exitSummaryFailed: Int32 = 2
+
     public enum Outcome {
         case success
+        /// Встреча расшифрована, `meeting.md` есть, но summary не сделано (код выхода 2); причина — последняя строка stderr.
+        case summaryFailed(String)
         case failure(String)
     }
 
@@ -135,6 +140,9 @@ public final class ProcessingQueue {
         appendLog(job: job, status: proc.terminationStatus, stderr: stderr)
 
         if proc.terminationStatus == 0 && proc.terminationReason == .exit { return .success }
+        if proc.terminationStatus == Self.exitSummaryFailed && proc.terminationReason == .exit {
+            return .summaryFailed(lastLine(stderr) ?? "summary не получено")
+        }
 
         let errorAfter = (try? FileManager.default.attributesOfItem(atPath: errorFile.path))?[.modificationDate] as? Date
         if errorAfter != nil, errorAfter != errorBefore || errorBefore == nil,
@@ -142,12 +150,15 @@ public final class ProcessingQueue {
            let first = text.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) }).first(where: { !$0.isEmpty }) {
             return .failure(first)
         }
-        let lastLine = stderr.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .last { !$0.isEmpty }
-        if let lastLine { return .failure(lastLine) }
+        if let line = lastLine(stderr) { return .failure(line) }
         if proc.terminationReason == .uncaughtSignal { return .failure("Обработка прервана (сигнал \(proc.terminationStatus))") }
         return .failure("Обработка завершилась с кодом \(proc.terminationStatus)")
+    }
+
+    private func lastLine(_ text: String) -> String? {
+        text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last { !$0.isEmpty }
     }
 
     private func appendLog(job: Job, status: Int32, stderr: String) {

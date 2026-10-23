@@ -21,6 +21,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var recordingApp = ""
     private var recordingStart: Date?
     private var transitioning = false       // идёт старт или остановка записи
+    private var terminating = false         // идёт выход: новых записей не начинать
     private var processing = false
     private var probing = false
     private var permissionProblem: String?  // текст ошибки доступа, пока он не выдан
@@ -82,12 +83,20 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminating { return .terminateLater }
+        terminating = true
         timers.forEach { $0.invalidate() }
         queue.cancelAll()
-        guard recordingDir != nil else { return .terminateNow }
-        // Корректно закрыть файлы; в обработку встреча уйдёт при следующем запуске.
+        guard recordingDir != nil || transitioning else { return .terminateNow }
+        // Корректно закрыть файлы и дописать endedAt; в обработку встреча уйдёт при следующем запуске.
+        // Если как раз идёт старт или остановка — сначала дождаться её конца.
         Task {
-            await self.stopRecording(manual: true, enqueue: false)
+            while self.transitioning {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            if self.recordingDir != nil {
+                await self.stopRecording(manual: true, enqueue: false)
+            }
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -102,7 +111,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let snapshot = await probe.snapshot()
             self.probing = false
             self.lastSnapshot = snapshot
-            guard !self.transitioning else { return }
+            guard !self.transitioning, !self.terminating else { return }
             let event = self.detector.update(snapshot, autoRecord: self.autoRecord,
                                              isRecording: self.recordingDir != nil)
             switch event {
@@ -119,7 +128,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - запись
 
     private func startRecording(app: String, bundleID: String, manual: Bool) async {
-        guard recordingDir == nil, !transitioning else { return }
+        guard recordingDir == nil, !transitioning, !terminating else { return }
         transitioning = true
         defer { transitioning = false; refreshTitle() }
         let dir: URL
@@ -164,7 +173,8 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         recordingDir = nil
         recordingStart = nil
         detector.noteManualStop()
-        if store.finishMeeting(dir) { queue.enqueue(dir) }
+        // Recorder сообщает о сбое уже после закрытия файлов. При выходе — обработка при следующем запуске.
+        if store.finishMeeting(dir), !terminating { queue.enqueue(dir) }
         checkPermissions(notifyIfMissing: false)
         notifier.notify(title: "Запись прервалась", body: error.localizedDescription)
         refreshTitle()
@@ -180,6 +190,9 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
             notifier.notify(title: "Встреча расшифрована", body: name, open: md)
         case (.success, .resummarize):
             notifier.notify(title: "Summary обновлено", body: name, open: md)
+        case (.summaryFailed(let reason), _):
+            notifier.notify(title: "Встреча расшифрована, но summary не получилось — Меню → Повторить summary",
+                            body: "\(name). \(reason)", open: md)
         case (.failure(let message), _):
             notifier.notify(title: "Ошибка обработки: \(name)", body: message)
         }

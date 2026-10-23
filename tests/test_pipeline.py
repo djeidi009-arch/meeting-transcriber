@@ -207,3 +207,30 @@ def test_cli_process_on_done_meeting_is_noop(tmp_path):
     result = subprocess.run([sys.executable, "-m", "transcriber", "process", str(d)], capture_output=True, text=True)
     assert result.returncode == 0
     assert (d / "meeting.md").read_text() == "готово"
+
+
+def test_process_reports_summary_failure_to_caller(tmp_path):
+    d = meeting(tmp_path)
+    fakes = Fakes(summary=SummaryError("истёк таймаут 300 с"))
+    result = process(d, Config(), asr=fakes.asr, diarize=fakes.diarize, summarize=fakes.summarize)
+    assert result == "истёк таймаут 300 с"
+    assert (d / "meeting.md").exists() and not (d / "error.txt").exists()
+
+
+def test_process_returns_none_when_summary_ok(tmp_path):
+    d = meeting(tmp_path)
+    fakes = Fakes()
+    assert process(d, Config(), asr=fakes.asr, diarize=fakes.diarize, summarize=fakes.summarize) is None
+
+
+def test_cli_summary_failure_exit_code_2(tmp_path, monkeypatch, capsys):
+    from transcriber import __main__ as cli
+    from transcriber import pipeline
+
+    d = tmp_path / "m"
+    d.mkdir()
+    monkeypatch.setattr(pipeline, "process", lambda meeting_dir, cfg: "claude не ответил")
+    code = cli.main(["process", str(d)])
+    assert code == cli.EXIT_SUMMARY_FAILED == 2
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "claude не ответил" in err[0]
