@@ -36,7 +36,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - запуск
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        UserDefaults.standard.register(defaults: [Self.autoRecordKey: true])
+        UserDefaults.standard.register(defaults: [Self.autoRecordKey: false])
 
         let projectDir = AppPaths.projectDir()
         config = AppConfig.load(projectDir: projectDir)

@@ -23,11 +23,28 @@ enum DetectorTests {
             check(ev3.isEmpty, "после перерыва снова меньше 5 с")
         }
 
-        test("хелпер Chrome совпадает по префиксу") {
+        test("браузер держит мик без окна созвона (голосовой ввод) → нет start") {
             let d = MeetingDetector(config: .builtIn)
             var rec = false
-            let ev = run(d, from: 0, to: 6, mic: ["com.google.Chrome.helper"], isRecording: &rec)
-            check(ev.first?.1 == .start(appName: "Chrome", bundleID: "com.google.Chrome"), "start Chrome: \(String(describing: ev.first?.1))")
+            let ev = run(d, from: 0, to: 120, mic: ["com.google.Chrome.helper"],
+                         windows: [("com.google.Chrome", "Яндекс — поиск")], isRecording: &rec)
+            check(ev.isEmpty, "голосовой ввод в браузере не запускает запись: \(ev)")
+        }
+
+        test("голосовое в Telegram → нет start") {
+            let d = MeetingDetector(config: .builtIn)
+            var rec = false
+            let ev = run(d, from: 0, to: 120, mic: ["ru.keepcoder.Telegram"],
+                         windows: [("ru.keepcoder.Telegram", "Telegram")], isRecording: &rec)
+            check(ev.isEmpty, "голосовое не запускает запись: \(ev)")
+        }
+
+        test("Safari: мик у WebKit.GPU + окно Телемоста → start") {
+            let d = MeetingDetector(config: .builtIn)
+            var rec = false
+            let ev = run(d, from: 0, to: 6, mic: ["com.apple.WebKit.GPU"],
+                         windows: [("com.apple.Safari", "Телемост — встреча")], isRecording: &rec)
+            check(ev.first?.1 == .start(appName: "Телемост", bundleID: "com.apple.WebKit.GPU"), "start Телемост: \(ev)")
         }
 
         test("браузер с окном Meet → имя Google Meet") {
@@ -62,7 +79,9 @@ enum DetectorTests {
         test("окно «Meet –» в браузере держит встречу") {
             let d = MeetingDetector(config: .builtIn)
             var rec = false
-            _ = run(d, from: 0, to: 6, mic: ["com.google.Chrome.helper"], isRecording: &rec)
+            _ = run(d, from: 0, to: 6, mic: ["com.google.Chrome.helper"],
+                    windows: [("com.google.Chrome", "Meet – xyz")], isRecording: &rec)
+            check(rec, "запись идёт")
             let held = run(d, from: 8, to: 200, mic: [], windows: [("com.google.Chrome", "Meet – xyz")], isRecording: &rec)
             check(held.isEmpty && rec, "окно Meet держит запись")
         }

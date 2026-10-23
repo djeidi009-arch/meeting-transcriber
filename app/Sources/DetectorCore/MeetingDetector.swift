@@ -24,14 +24,19 @@ public struct DetectorConfig {
     public var stopAfter: TimeInterval
     /// Сколько подряд не должно быть признаков встречи, чтобы снялся запрет автостарта после ручной остановки.
     public var resumeAfter: TimeInterval
+    /// Префиксы приложений, которым одного микрофона для автостарта мало: браузеры и мессенджеры
+    /// (голосовые, голосовой ввод, диктовка). Старт — только если у того же приложения открыто окно созвона.
+    public var windowRequired: Set<String>
 
     public init(appBundlePrefixes: [String: String],
                 titlePatterns: [String],
                 titleAppNames: [String: String] = [:],
                 startAfter: TimeInterval = 5,
                 stopAfter: TimeInterval = 90,
-                resumeAfter: TimeInterval = 30) {
+                resumeAfter: TimeInterval = 30,
+                windowRequired: Set<String> = []) {
         self.resumeAfter = resumeAfter
+        self.windowRequired = windowRequired
         self.appBundlePrefixes = appBundlePrefixes
         self.titlePatterns = titlePatterns
         self.titleAppNames = titleAppNames
@@ -66,13 +71,19 @@ public struct DetectorConfig {
             "org.mozilla.firefox": "Firefox",
             "com.microsoft.edgemac": "Edge",
         ],
-        titlePatterns: ["Zoom Meeting", "Meet –", "Meet - ", "Телемост", "Толк"],
+        titlePatterns: ["Zoom Meeting", "Meet –", "Meet - ", "Телемост", "Толк", "Microsoft Teams"],
         titleAppNames: [
             "Zoom Meeting": "Zoom",
+            "Microsoft Teams": "Teams",
             "Meet –": "Google Meet",
             "Meet - ": "Google Meet",
             "Телемост": "Телемост",
             "Толк": "Толк",
+        ],
+        windowRequired: [
+            "ru.keepcoder.Telegram", "org.telegram.desktop", "com.tinyspeck.slackmacgap", "com.hnc.Discord",
+            "com.google.Chrome", "com.apple.Safari", "com.apple.WebKit.GPU", "company.thebrowser.Browser",
+            "ru.yandex.desktop.yandex-browser", "org.mozilla.firefox", "com.microsoft.edgemac",
         ]
     )
 
@@ -125,12 +136,18 @@ public final class MeetingDetector {
     }
 
     public func update(_ s: Snapshot, autoRecord: Bool, isRecording: Bool) -> DetectorEvent? {
-        let micApp = s.micBundleIDs.lazy.compactMap { self.config.match($0) }.first
-        let meetingWindow = s.windows.lazy.compactMap { w -> (prefix: String, pattern: String)? in
-            guard let app = self.config.match(w.bundleID), let p = self.config.matchingPattern(w.title) else { return nil }
-            return (app.prefix, p)
-        }.first
-        let evidence = micApp != nil || meetingWindow != nil
+        let micApps = s.micBundleIDs.compactMap { config.match($0) }
+        let meetingWindows = s.windows.compactMap { w -> (prefix: String, name: String, pattern: String)? in
+            guard let app = config.match(w.bundleID), let p = config.matchingPattern(w.title) else { return nil }
+            return (app.prefix, app.name, p)
+        }
+        // Окно созвона того же приложения; сравнение по имени — у Safari мик держит com.apple.WebKit.GPU.
+        func window(for app: (prefix: String, name: String)) -> (prefix: String, name: String, pattern: String)? {
+            meetingWindows.first { $0.prefix == app.prefix || $0.name == app.name }
+        }
+        // Кандидат на автостарт: приложение созвонов, а браузер/мессенджер — только с окном созвона.
+        let micApp = micApps.first { !config.windowRequired.contains($0.prefix) || window(for: $0) != nil }
+        let evidence = !micApps.isEmpty || !meetingWindows.isEmpty
 
         if micApp != nil {
             if micSince == nil { micSince = s.time }
@@ -168,7 +185,7 @@ public final class MeetingDetector {
         }
         var name = app.name
         // Более точное имя по окну встречи того же приложения (Chrome + «Meet –» → Google Meet).
-        if let w = meetingWindow, w.prefix == app.prefix, let better = config.titleAppNames[w.pattern] {
+        if let w = window(for: app), let better = config.titleAppNames[w.pattern] {
             name = better
         }
         meetingActive = true
