@@ -37,3 +37,13 @@ def test_render_empty_speech():
     md = render_markdown({**META, "endedAt": None}, None, None, [])
     assert "Речь не распознана" in md
     assert "## Транскрипт" in md
+
+
+def test_duration_from_meta_wins_over_audio():
+    md = render_markdown(META, None, None, [Utterance(0.0, 1.0, "Я", "Привет")], audio_duration=49.7)
+    assert "Длительность: 1 ч 5 мин" in md
+
+
+def test_duration_without_end_time_uses_longest_track():
+    md = render_markdown({**META, "endedAt": None}, None, None, [Utterance(0.0, 40.0, "Я", "Привет")], audio_duration=49.7)
+    assert "Длительность: 50 с" in md

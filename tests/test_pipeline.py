@@ -234,3 +234,15 @@ def test_cli_summary_failure_exit_code_2(tmp_path, monkeypatch, capsys):
     assert code == cli.EXIT_SUMMARY_FAILED == 2
     err = capsys.readouterr().err.strip().splitlines()
     assert len(err) == 1 and "claude не ответил" in err[0]
+
+
+def test_duration_without_end_time_is_longest_track_not_last_phrase(tmp_path):
+    d = meeting(tmp_path, mic=TONE, system=None)
+    (d / "meta.json").write_text(json.dumps({**META, "endedAt": None}))
+    make_caf(d / "system.caf", SILENCE)  # немая дорожка тоже считается
+    run(d, Fakes())  # фейковые реплики заканчиваются на 4 с, дорожки — 2 с
+    assert "Длительность: 2 с" in (d / "meeting.md").read_text()
+
+    (d / "meeting.md").unlink()
+    resummarize(d, Config(), summarize=Fakes().summarize)
+    assert "Длительность: 2 с" in (d / "meeting.md").read_text()

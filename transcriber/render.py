@@ -35,7 +35,14 @@ def transcript_text(utterances: list[Utterance]) -> str:
     return "\n".join(f"[{_timestamp(u.start)}] {u.speaker}: {u.text}" for u in utterances)
 
 
-def render_markdown(meta: dict, summary: str | None, summary_error: str | None, utterances: list[Utterance]) -> str:
+def render_markdown(
+    meta: dict,
+    summary: str | None,
+    summary_error: str | None,
+    utterances: list[Utterance],
+    audio_duration: float | None = None,
+) -> str:
+    """audio_duration — длина самой длинной дорожки; нужна, когда в meta.json нет времени конца."""
     app = meta.get("app") or "Встреча"
     started = _parse_time(meta.get("startedAt"))
     ended = _parse_time(meta.get("endedAt"))
@@ -45,6 +52,8 @@ def render_markdown(meta: dict, summary: str | None, summary_error: str | None, 
 
     if started and ended:
         seconds = (ended - started).total_seconds()
+    elif audio_duration is not None:
+        seconds = audio_duration
     else:
         seconds = max((u.end for u in utterances), default=0.0)
     lines += [f"Длительность: {_duration(seconds)}", ""]

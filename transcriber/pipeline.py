@@ -91,6 +91,7 @@ def _process(
 
     segments: dict[str, list[Segment]] = {track: [] for track in TRACKS}
     turns: list[Turn] = []
+    duration = 0.0
     with tempfile.TemporaryDirectory(prefix="transcriber-") as tmp:
         for track in TRACKS:
             src = _track_source(meeting_dir, track)
@@ -98,6 +99,7 @@ def _process(
                 continue
             wav = Path(tmp) / f"{track}.wav"
             has_sound = audio.to_wav16k(src, wav)
+            duration = max(duration, audio.wav_duration(wav))
             if src.suffix == ".caf" and src.stat().st_size > audio.HEADER_ONLY_BYTES:
                 audio.to_m4a(src, meeting_dir / f"{track}.m4a")
             if not has_sound:
@@ -112,10 +114,17 @@ def _process(
 
     _write_atomic(
         meeting_dir / "transcript.json",
-        json.dumps({"utterances": [asdict(u) for u in utterances]}, ensure_ascii=False, indent=1),
+        json.dumps(
+            {"utterances": [asdict(u) for u in utterances], "duration": round(duration, 2)},
+            ensure_ascii=False,
+            indent=1,
+        ),
     )
     summary_text, summary_error = _summarize(utterances, cfg, summarize)
-    _write_atomic(meeting_dir / "meeting.md", render.render_markdown(meta, summary_text, summary_error, utterances))
+    _write_atomic(
+        meeting_dir / "meeting.md",
+        render.render_markdown(meta, summary_text, summary_error, utterances, audio_duration=duration),
+    )
 
     (meeting_dir / "error.txt").unlink(missing_ok=True)
     for track in TRACKS:
@@ -169,13 +178,15 @@ def resummarize(meeting_dir: Path, cfg: Config, summarize: SummarizeFn | None = 
     try:
         data = json.loads((meeting_dir / "transcript.json").read_text(encoding="utf-8"))
         utterances = [Utterance(**u) for u in data["utterances"]]
+        duration = data.get("duration")
+        duration = float(duration) if isinstance(duration, (int, float)) else None
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ProcessingError("Нет транскрипта (transcript.json): сначала нужна обработка встречи") from exc
 
     summary_text, summary_error = _summarize(utterances, cfg, summarize or _default_summarize)
     _write_atomic(
         meeting_dir / "meeting.md",
-        render.render_markdown(_read_meta(meeting_dir), summary_text, summary_error, utterances),
+        render.render_markdown(_read_meta(meeting_dir), summary_text, summary_error, utterances, audio_duration=duration),
     )
     if summary_error:
         raise ProcessingError(f"Summary не удалось сделать: {summary_error}")

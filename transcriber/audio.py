@@ -43,6 +43,15 @@ def read_wav16k(path: Path) -> np.ndarray:
     return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
 
 
+def wav_duration(path: Path) -> float:
+    """Длина WAV в секундах (0 — файла нет или он битый)."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            return w.getnframes() / float(w.getframerate())
+    except (OSError, EOFError, wave.Error):
+        return 0.0
+
+
 def to_wav16k(src: Path, dst: Path) -> bool:
     """False — дорожки нет, она пустая или немая."""
     if not src.exists() or src.stat().st_size == 0:
