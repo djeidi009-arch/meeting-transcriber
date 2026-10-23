@@ -1,0 +1,175 @@
+"""Обработка папки встречи: дорожки → текст → спикеры → summary → meeting.md."""
+from __future__ import annotations
+
+import json
+import re
+import tempfile
+from dataclasses import asdict
+from pathlib import Path
+from typing import Callable
+
+from . import audio, merge, render
+from .config import Config
+from .models import Segment, Turn, Utterance
+from .summary import SummaryError
+
+TRACKS = ("mic", "system")
+
+AsrFn = Callable[[Path, str], list[Segment]]
+DiarizeFn = Callable[[Path], list[Turn]]
+SummarizeFn = Callable[[str, str, int], str]
+
+
+class ProcessingError(Exception):
+    """Ошибка обработки; текст — по-русски, одной строкой."""
+
+
+def _default_asr(wav: Path, language: str) -> list[Segment]:
+    from .asr import transcribe
+
+    return transcribe(wav, language)
+
+
+def _default_diarize(wav: Path) -> list[Turn]:
+    from .diarize import diarize
+
+    return diarize(wav)
+
+
+def _default_summarize(transcript: str, claude_path: str, timeout: int) -> str:
+    from .summary import summarize
+
+    return summarize(transcript, claude_path, timeout)
+
+
+def _check_dir(meeting_dir: Path) -> None:
+    if not meeting_dir.is_dir():
+        raise ProcessingError(f"Папка встречи не найдена: {meeting_dir}")
+
+
+def _read_meta(meeting_dir: Path) -> dict:
+    try:
+        meta = json.loads((meeting_dir / "meta.json").read_text(encoding="utf-8"))
+        if isinstance(meta, dict):
+            return meta
+    except (OSError, ValueError):
+        pass
+    # без meta.json — имя приложения из имени папки «ГГГГ-ММ-ДД ЧЧ-ММ Приложение»
+    match = re.match(r"\d{4}-\d{2}-\d{2} \d{2}-\d{2} (.+?)(?: \(\d+\))?$", meeting_dir.name)
+    return {"app": match.group(1) if match else meeting_dir.name, "startedAt": None, "endedAt": None}
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _summarize(utterances: list[Utterance], cfg: Config, summarize: SummarizeFn) -> tuple[str | None, str | None]:
+    if not utterances:
+        return None, None
+    try:
+        return summarize(render.transcript_text(utterances), cfg.claude_path, cfg.summary_timeout_sec), None
+    except SummaryError as exc:
+        return None, exc.reason
+
+
+def _track_source(meeting_dir: Path, track: str) -> Path | None:
+    for ext in ("caf", "m4a"):
+        candidate = meeting_dir / f"{track}.{ext}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _process(meeting_dir: Path, cfg: Config, asr: AsrFn, diarize: DiarizeFn, summarize: SummarizeFn) -> None:
+    if (meeting_dir / ".recording").exists():
+        raise ProcessingError("Запись ещё идёт (есть маркер .recording)")
+    meta = _read_meta(meeting_dir)
+
+    segments: dict[str, list[Segment]] = {track: [] for track in TRACKS}
+    turns: list[Turn] = []
+    with tempfile.TemporaryDirectory(prefix="transcriber-") as tmp:
+        for track in TRACKS:
+            src = _track_source(meeting_dir, track)
+            if src is None:
+                continue
+            wav = Path(tmp) / f"{track}.wav"
+            has_sound = audio.to_wav16k(src, wav)
+            if src.suffix == ".caf" and src.stat().st_size > audio.HEADER_ONLY_BYTES:
+                audio.to_m4a(src, meeting_dir / f"{track}.m4a")
+            if not has_sound:
+                continue
+            segments[track] = asr(wav, cfg.language)
+            if track == "system" and segments[track]:
+                turns = diarize(wav)
+
+    system_u = merge.assign_speakers(segments["system"], turns)
+    mic_u = merge.drop_echo(merge.mic_utterances(segments["mic"]), system_u)
+    utterances = merge.combine(mic_u, system_u)
+
+    _write_atomic(
+        meeting_dir / "transcript.json",
+        json.dumps({"utterances": [asdict(u) for u in utterances]}, ensure_ascii=False, indent=1),
+    )
+    summary_text, summary_error = _summarize(utterances, cfg, summarize)
+    _write_atomic(meeting_dir / "meeting.md", render.render_markdown(meta, summary_text, summary_error, utterances))
+
+    (meeting_dir / "error.txt").unlink(missing_ok=True)
+    for track in TRACKS:
+        caf = meeting_dir / f"{track}.caf"
+        if caf.exists() and ((meeting_dir / f"{track}.m4a").exists() or caf.stat().st_size <= audio.HEADER_ONLY_BYTES):
+            caf.unlink()
+
+
+def _record_error(meeting_dir: Path, exc: Exception) -> None:
+    try:
+        (meeting_dir / "error.txt").write_text(f"{error_message(exc)}\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def error_message(exc: Exception) -> str:
+    if isinstance(exc, (ProcessingError, audio.AudioError)):
+        text = str(exc)
+    else:
+        text = f"Ошибка обработки: {type(exc).__name__}: {exc}"
+    return " ".join(text.split())
+
+
+def process(
+    meeting_dir: Path,
+    cfg: Config,
+    asr: AsrFn | None = None,
+    diarize: DiarizeFn | None = None,
+    summarize: SummarizeFn | None = None,
+) -> None:
+    """Обработать папку встречи. Уже обработанная (есть meeting.md) — ничего не делает."""
+    meeting_dir = Path(meeting_dir)
+    _check_dir(meeting_dir)
+    if (meeting_dir / "meeting.md").exists():
+        return
+    try:
+        _process(meeting_dir, cfg, asr or _default_asr, diarize or _default_diarize, summarize or _default_summarize)
+    except Exception as exc:
+        _record_error(meeting_dir, exc)
+        raise
+
+
+def resummarize(meeting_dir: Path, cfg: Config, summarize: SummarizeFn | None = None) -> None:
+    """Заново сделать summary по transcript.json и перезаписать meeting.md."""
+    meeting_dir = Path(meeting_dir)
+    _check_dir(meeting_dir)
+    try:
+        data = json.loads((meeting_dir / "transcript.json").read_text(encoding="utf-8"))
+        utterances = [Utterance(**u) for u in data["utterances"]]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ProcessingError("Нет транскрипта (transcript.json): сначала нужна обработка встречи") from exc
+
+    summary_text, summary_error = _summarize(utterances, cfg, summarize or _default_summarize)
+    _write_atomic(
+        meeting_dir / "meeting.md",
+        render.render_markdown(_read_meta(meeting_dir), summary_text, summary_error, utterances),
+    )
+    if summary_error:
+        raise ProcessingError(f"Summary не удалось сделать: {summary_error}")
