@@ -85,3 +85,22 @@ CLI (`python -m transcriber …`), код выхода 0 — успех, ина�
 - Уведомления — `UNUserNotificationCenter`; если недоступно — `osascript display notification`.
 
 ## Что построили законченные таски
+
+### T02 — приложение (сделано)
+- `DetectorConfig.builtIn(extraBundleIDs:extraTitlePatterns:nameFor:)`, `match(_:)->(prefix,name)?`; `start.bundleID` — канонический префикс.
+- `MeetingStore(outputDir:)`: `createMeeting(app:bundleID:manual:startedAt:) throws -> URL`, `finishMeeting(_:endedAt:minDuration:) -> Bool`, `recoverPending() -> [URL]`, `recentMeetings(limit:)`, `lastMeetingWithTranscript()`.
+- `AppConfig.load(from:projectDir:)`; `ProcessingQueue(pythonPath:projectDir:extraPath:logURL:onBusyChange:onFinish:)` — failure = первая строка `error.txt` или последняя строка stderr. MeetingStore/AppConfig/ProcessingQueue живут в DetectorCore (только Foundation).
+- `Recorder.start(dir:) async throws`, `stop() async`. Бинарь: `--probe [--watch]`. install/uninstall сухой прогон: `MT_HOME=<dir> MT_SKIP_LAUNCHCTL=1`, `MT_CLAUDE_PATH`.
+
+### T01 — обработка (сделано)
+- `python -m transcriber process|resummarize <dir>` (0/1, одна строка stderr по-русски); `config.load(path=None) -> Config(output_dir, language, claude_path, python_path, summary_timeout_sec, extra_bundle_ids, extra_title_patterns)`.
+- `audio.to_wav16k/to_m4a/read_wav16k`; `asr.transcribe`; `diarize.diarize`; `merge.*`; `summary.summarize`/`SummaryError`; `render.render_markdown`, `render.transcript_text`; `pipeline.process/resummarize`, `ProcessingError`. Модели данных — `transcriber/models.py`. `transcript.json = {"utterances":[{start,end,speaker,text}]}`.
+- Флаги claude: `-p --output-format text --tools "" --strict-mcp-config --no-session-persistence`. Модели грузятся из локального кеша HF в первую очередь (`models_cache.local_snapshot`).
+
+### F1 — правки ревью (сделано)
+- DetectorCore: `RecordingClock`, `TrackAligner` (тишина по PTS); `DetectorConfig.resumeAfter = 30`; `ProcessingQueue.Outcome.summaryFailed`, `exitSummaryFailed = 2`.
+- Python: `pipeline.process -> str | None` (причина сбоя summary); CLI `process` → код 2 при сбое summary, error.txt не пишется.
+
+### F2 — точность расшифровки (сделано)
+- `vad.speech_regions(samples, sample_rate) -> list[(start,end)]`, `MAX_REGION_SEC = 28`; `asr.transcribe_samples(samples, language, decode)`; каждый участок речи — отдельно, `condition_on_previous_text=False`.
+- `audio.wav_duration(path)`; `render.render_markdown(..., audio_duration=None)`; `transcript.json` получил `duration`.

@@ -7,6 +7,44 @@
 
 | Команда | Что делает |
 |---------|------------|
+| `make setup` | `uv sync`: Python 3.12 + `.venv` |
+| `make check` | pytest (48) + Swift `selftest` (86 проверок) — единственная проверка проекта |
+| `uv run pytest tests/test_merge.py` | один файл тестов |
+| `cd app && swift run selftest` | только Swift-проверки |
+| `make app` | собрать `build/MeetingTranscriber.app` (release + Info.plist + ad-hoc подпись) |
+| `build/MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber --probe` | снимок: кто держит микрофон, какие окна видны (`--watch` — раз в 2 с, с событиями детектора) |
+| `.venv/bin/python -m transcriber process "<папка встречи>"` | обработать запись → `meeting.md`; на готовой папке ничего не делает |
+| `.venv/bin/python -m transcriber resummarize "<папка встречи>"` | заново summary из `transcript.json` (не запускалась при описании) |
+| `make install` / `make uninstall` | LaunchAgent + копия в `~/Applications` + `config.json` / снятие. НЕ проверены, трогают систему; сухой прогон: `MT_HOME=<dir> MT_SKIP_LAUNCHCTL=1` |
+
+## Где что
+
+- `transcriber/` — Python-пайплайн; вход `__main__.py` → `pipeline.py` (`process`, `resummarize`; зависимости asr/diarize/summarize передаются параметром — так тесты подставляют фейки).
+- `transcriber/merge.py` — чистая логика склейки спикеров и удаления эха, главный шов тестов; `vad.py` режет речь на участки ≤ 28 с перед `asr.py`.
+- `transcriber/models_cache.py` — загрузка HF-моделей; `diarize.py` — pyannote `speaker-diarization-community-1`.
+- `transcriber/config.py` и `app/Sources/DetectorCore/AppConfig.swift` — две реализации одного `~/.config/meeting-transcriber/config.json`; ключ меняешь — правь обе.
+- `app/Package.swift` — три таргета: `DetectorCore` (только Foundation: детектор, `MeetingStore`, `ProcessingQueue`, `TrackAligner`), `MeetingTranscriber` (AppKit/CoreAudio/ScreenCaptureKit: `Recorder`, `SystemProbe`, `StatusMenu`, `Notifier`), `selftest` (замена XCTest, его нет).
+- `app/Sources/selftest/` — Swift-проверки; новый набор `XxxTests.all()` добавь вызовом в конец `selftest/main.swift`.
+- `scripts/build_app.sh` (сборка .app), `scripts/install.sh`, `scripts/uninstall.sh`.
+- Контракт Swift ↔ Python — папка встречи `<outputDir>/<ГГГГ-ММ-ДД ЧЧ-ММ> <Приложение>/` (`meta.json`, `mic.caf`/`system.caf`, `transcript.json`, `meeting.md`, `error.txt`); файлы пишут `app/Sources/DetectorCore/MeetingStore.swift` и `transcriber/pipeline.py`; пользовательское описание — `README.md`.
+- Логи приложения: `~/Library/Logs/MeetingTranscriber/` (`processing.log`, `app.log` из LaunchAgent).
+
+## Подводные камни
+
+- Подпись ad-hoc: после каждой пересборки macOS может заново спросить микрофон и запись экрана/системного аудио или молча считать доступ выключенным — выдай заново и перезапусти приложение.
+- Приложение из LaunchAgent не видит PATH из nvm: пути к `claude` и `.venv/bin/python` берутся из `~/.config/meeting-transcriber/config.json` (`claudePath`, `pythonPath`); `ProcessingQueue` добавляет к PATH дочернего процесса только `/opt/homebrew/bin`, `/usr/local/bin` и папку `claude`.
+- Модели HF берутся сначала из локального кеша (`local_files_only=True`), сеть — только если кеша нет: онлайн-проверка обновлений висела минутами. Токен — `~/.cache/huggingface/token`, библиотека читает сама.
+- `torch==2.8.0`, `torchaudio==2.8.0`, `torchcodec==0.7.0` закреплены в `pyproject.toml` вместе — не обновляй по одному.
+- Код выхода `process`: 0 — ок, 1 — сбой, 2 — расшифровка готова, сбой только summary (`ProcessingQueue.exitSummaryFailed`; не путать с ошибкой). Починка — `resummarize`.
+- Summary — `claude -p`: нужен живой вход в Claude Code CLI (подписка), иначе summary падает, а транскрипт остаётся.
+- Весь текст для пользователя — по-русски, имена в коде — по-английски. Тяжёлые модели в тестах не грузить.
+
+## Окружение
+
+- macOS 15+, Apple Silicon; только Command Line Tools (Xcode нет), SwiftPM; Python 3.12 строго (`>=3.12,<3.13`) через `uv`; системный `python3` не использовать.
+- `ffmpeg` и `uv` из Homebrew; `claude` в PATH (его абсолютный путь пишет `install.sh`).
+- Настройки: `~/.config/meeting-transcriber/config.json` (`outputDir` по умолчанию `~/transcripts`, `language`, `claudePath`, `pythonPath`, `summaryTimeoutSec`, `extraBundleIDs`, `extraTitlePatterns`); `autoRecord` — в `UserDefaults` приложения.
+- Сети нет, кроме `claude -p` и первой загрузки моделей HF.
 
 ## Как здесь работает Autopilot
 
