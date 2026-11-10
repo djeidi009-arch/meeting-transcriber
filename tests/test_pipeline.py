@@ -246,3 +246,36 @@ def test_duration_without_end_time_is_longest_track_not_last_phrase(tmp_path):
     (d / "meeting.md").unlink()
     resummarize(d, Config(), summarize=Fakes().summarize)
     assert "Длительность: 2 с" in (d / "meeting.md").read_text()
+
+
+def imported(tmp_path: Path, source: Path) -> Path:
+    d = tmp_path / "2026-11-10 12-00 Интервью"
+    d.mkdir()
+    meta = {"app": "Интервью", "bundleId": "", "startedAt": "2026-11-10T12:00:00+03:00",
+            "endedAt": None, "manual": True, "sourceFile": str(source)}
+    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+    return d
+
+
+def test_process_imported_video_extracts_audio_as_system_track(tmp_path):
+    video = tmp_path / "Интервью.mp4"
+    subprocess.run(
+        [ffmpeg_path(), "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=5",
+         "-f", "lavfi", "-i", TONE, "-t", "2", "-shortest", "-c:v", "libx264", "-c:a", "aac", str(video)],
+        check=True,
+    )
+    d = imported(tmp_path, video)
+    fakes = Fakes()
+    run(d, fakes)
+    assert fakes.asr_calls == ["system.wav"] and fakes.diarize_calls == 1
+    assert (d / "system.m4a").stat().st_size > 0
+    assert video.exists()  # исходник не трогаем
+    md = (d / "meeting.md").read_text()
+    assert md.startswith("# Интервью — 10.11.2026 12:00") and "Длительность: 2 с" in md
+
+
+def test_process_imported_missing_file_fails_in_russian(tmp_path):
+    d = imported(tmp_path, tmp_path / "нет.mp4")
+    with pytest.raises(ProcessingError, match="Файл не найден"):
+        run(d, Fakes())
+    assert "Файл не найден" in (d / "error.txt").read_text()

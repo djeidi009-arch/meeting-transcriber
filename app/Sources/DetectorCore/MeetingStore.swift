@@ -57,6 +57,18 @@ public final class MeetingStore {
         return dir
     }
 
+    /// Папка для загруженного аудио или видео: `meta.json` с `sourceFile`, без `.recording`.
+    /// Звук из файла достаёт Python-обработка; сам файл остаётся на месте.
+    public func createImport(file: URL, at date: Date = Date()) throws -> URL {
+        let name = String(file.deletingPathExtension().lastPathComponent.prefix(60))
+        let dir = try createMeeting(app: name, bundleID: "", manual: true, startedAt: date)
+        var meta = readMeta(dir) ?? [:]
+        meta["sourceFile"] = file.standardizedFileURL.path
+        try writeMeta(meta, to: dir)
+        try? fm.removeItem(at: dir.appendingPathComponent(Self.recordingMarker))
+        return dir
+    }
+
     /// Снимает `.recording` и дописывает `endedAt`. Запись короче `minDuration` удаляется целиком.
     /// Возвращает true, если встреча осталась и её нужно обработать.
     @discardableResult
@@ -83,6 +95,7 @@ public final class MeetingStore {
                 if !finishMeeting(dir, endedAt: ended, minDuration: minDuration) { continue }
             }
             let hasAudio = Self.audioFiles.contains { fm.fileExists(atPath: dir.appendingPathComponent($0).path) }
+                || readMeta(dir)?["sourceFile"] is String
             let done = fm.fileExists(atPath: dir.appendingPathComponent("meeting.md").path)
             if hasAudio && !done { result.append(dir) }
         }

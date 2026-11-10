@@ -82,12 +82,24 @@ def _track_source(meeting_dir: Path, track: str) -> Path | None:
     return None
 
 
+def _import_source(meeting_dir: Path, meta: dict) -> None:
+    """Загруженный файл (meta.sourceFile, аудио или видео) → system.m4a: все голоса делит диаризация."""
+    source = meta.get("sourceFile")
+    if not source or any(_track_source(meeting_dir, t) for t in TRACKS):
+        return
+    src = Path(source)
+    if not src.is_file():
+        raise ProcessingError(f"Файл не найден: {src}")
+    audio.to_m4a(src, meeting_dir / "system.m4a")
+
+
 def _process(
     meeting_dir: Path, cfg: Config, asr: AsrFn, diarize: DiarizeFn, summarize: SummarizeFn
 ) -> str | None:
     if (meeting_dir / ".recording").exists():
         raise ProcessingError("Запись ещё идёт (есть маркер .recording)")
     meta = _read_meta(meeting_dir)
+    _import_source(meeting_dir, meta)
 
     segments: dict[str, list[Segment]] = {track: [] for track in TRACKS}
     turns: list[Turn] = []

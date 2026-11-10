@@ -100,6 +100,19 @@ enum StoreTests {
             check(exists(done) && exists(empty), "остальные папки на месте")
         }
 
+        test("загруженный файл: папка по имени файла, sourceFile, без .recording, подхватывается при запуске") {
+            let root = tempDir("import")
+            let store = MeetingStore(outputDir: root)
+            let file = root.appendingPathComponent("Интервью с клиентом.mp4")
+            touch(file)
+            let dir = try store.createImport(file: file, at: localDate(2026, 11, 10, 12, 0))
+            check(dir.lastPathComponent == "2026-11-10 12-00 Интервью с клиентом", "имя папки: \(dir.lastPathComponent)")
+            let meta = readJSON(dir.appendingPathComponent("meta.json"))
+            check(meta?["sourceFile"] as? String == file.standardizedFileURL.path, "sourceFile: \(String(describing: meta?["sourceFile"]))")
+            check(!exists(dir.appendingPathComponent(".recording")), "нет .recording")
+            check(store.recoverPending().map(\.lastPathComponent) == [dir.lastPathComponent], "необработанный файл — в очередь")
+        }
+
         test("последние встречи и встреча для повторного summary") {
             let root = tempDir("recent")
             let store = MeetingStore(outputDir: root)

@@ -25,14 +25,16 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             if let open { content.userInfo = ["open": open.path] }
             let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
             UNUserNotificationCenter.current().add(request) { error in
-                if error != nil { self.osascript(title: title, body: body) }
+                if error != nil { self.osascript(title: title, body: body, hasFile: open != nil) }
             }
         } else {
-            osascript(title: title, body: body)
+            osascript(title: title, body: body, hasFile: open != nil)
         }
     }
 
-    private func osascript(title: String, body: String) {
+    /// Клик по такому уведомлению открывает «Редактор скриптов», а не файл, поэтому подсказываем путь через меню.
+    private func osascript(title: String, body: String, hasFile: Bool = false) {
+        let body = hasFile ? "\(body) — открыть: меню MeetingTranscriber → Последние встречи" : body
         func esc(_ s: String) -> String {
             s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         }

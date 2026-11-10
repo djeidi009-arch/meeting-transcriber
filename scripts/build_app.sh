@@ -17,6 +17,7 @@ cp "$ROOT/app/Resources/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :MTProjectDir $ROOT" "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
-codesign --force --sign - --identifier ru.local.meeting-transcriber "$APP"
+# Требование по идентификатору, а не по cdhash: иначе после каждой пересборки macOS забывает выданные разрешения.
+codesign --force --sign - --identifier ru.local.meeting-transcriber -r='designated => identifier "ru.local.meeting-transcriber"' "$APP"
 codesign --verify --strict "$APP"
 echo "Собрано: $APP"

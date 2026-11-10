@@ -1,5 +1,6 @@
 import AppKit
 import DetectorCore
+import UniformTypeIdentifiers
 
 /// Значок в строке меню и вся логика приложения: опрос, автостарт/стоп, запись, очередь.
 @MainActor
@@ -245,6 +246,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if processing { menu.addItem(disabled("Идёт обработка…")) }
             menu.addItem(item("Начать запись", #selector(startClicked)))
         }
+        menu.addItem(item("Загрузить аудио или видео…", #selector(importClicked)))
         let auto = item("Записывать автоматически", #selector(toggleAuto))
         auto.state = autoRecord ? .on : .off
         menu.addItem(auto)
@@ -300,6 +302,25 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func stopClicked() {
         Task { await stopRecording(manual: true) }
+    }
+
+    @objc private func importClicked() {
+        let panel = NSOpenPanel()
+        panel.title = "Выберите аудио или видео для расшифровки"
+        panel.prompt = "Расшифровать"
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.audio, .movie]
+        NSApp.activate(ignoringOtherApps: true) // у приложения строки меню окно иначе прячется за другими
+        guard panel.runModal() == .OK else { return }
+        for file in panel.urls {
+            do {
+                queue.enqueue(try store.createImport(file: file))
+            } catch {
+                notifier.notify(title: "Файл не добавлен", body: "\(file.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        refreshTitle()
     }
 
     @objc private func toggleAuto() {
