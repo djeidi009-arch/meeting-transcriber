@@ -90,7 +90,8 @@ extension AppModel {
                 }
             } while loop
             finishDemo(dir)
-            await synthesizeAudio(dir)
+            // у встречи со звуком (повтор summary) файлы не переписываем: их сейчас может играть плеер
+            if !demoAudioReady.contains(id) { await synthesizeAudio(dir) }
             try? FileManager.default.removeItem(at: progressFile)
             demoStatus[id] = nil
             refresh()

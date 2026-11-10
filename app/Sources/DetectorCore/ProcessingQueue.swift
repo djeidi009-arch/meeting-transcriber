@@ -116,9 +116,18 @@ public final class ProcessingQueue {
         onChange()
 
         if !cancelled {
+            let errorFile = job.dir.appendingPathComponent("error.txt")
+            let errorBefore = modified(errorFile)
             let outcome = execute(job)
             lock.lock()
             let stillValid = gen == generation
+            lock.unlock()
+            // Python причину не записал (не запустился, убит сигналом) — пишем сами, до снятия running:
+            // иначе встреча без meeting.md и error.txt вечно «В очереди». Прерванную выходом не трогаем.
+            if stillValid, case .failure(let text) = outcome, modified(errorFile) == errorBefore {
+                try? Data((text + "\n").utf8).write(to: errorFile, options: .atomic)
+            }
+            lock.lock()
             running = nil
             current = nil
             lock.unlock()
@@ -150,7 +159,7 @@ public final class ProcessingQueue {
 
         // Ошибку из error.txt прошлой попытки не путаем с новой.
         let errorFile = job.dir.appendingPathComponent("error.txt")
-        let errorBefore = (try? FileManager.default.attributesOfItem(atPath: errorFile.path))?[.modificationDate] as? Date
+        let errorBefore = modified(errorFile)
 
         do {
             lock.lock(); current = proc; lock.unlock()
@@ -168,7 +177,7 @@ public final class ProcessingQueue {
             return .summaryFailed(lastLine(stderr) ?? "summary не получено")
         }
 
-        let errorAfter = (try? FileManager.default.attributesOfItem(atPath: errorFile.path))?[.modificationDate] as? Date
+        let errorAfter = modified(errorFile)
         if errorAfter != nil, errorAfter != errorBefore || errorBefore == nil,
            let text = try? String(contentsOf: errorFile, encoding: .utf8),
            let first = text.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) }).first(where: { !$0.isEmpty }) {
@@ -177,6 +186,10 @@ public final class ProcessingQueue {
         if let line = lastLine(stderr) { return .failure(line) }
         if proc.terminationReason == .uncaughtSignal { return .failure("Обработка прервана (сигнал \(proc.terminationStatus))") }
         return .failure("Обработка завершилась с кодом \(proc.terminationStatus)")
+    }
+
+    private func modified(_ url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
     private func lastLine(_ text: String) -> String? {

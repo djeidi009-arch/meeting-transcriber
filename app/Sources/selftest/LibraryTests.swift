@@ -75,6 +75,9 @@ enum LibraryTests {
             check(onlyStarting.first { $0.id == "4 running" }?.status == .failed("старая ошибка"), "без очереди та же папка — ошибка")
             let resummarizing = library.items(queue: .init(running: .init(dir: old, kind: .resummarize), pending: []))
             check(resummarizing.last?.status == .processing(nil), "повтор summary на готовой встрече → расшифровывается")
+            check(resummarizing.last?.isTranscribed == true, "повтор summary: meeting.md на месте — экран встречи остаётся")
+            check(item(old)?.isTranscribed == true && item(failed)?.isTranscribed == false && onlyStarting.first?.isTranscribed == false,
+                  "isTranscribed — только у встреч с meeting.md")
 
             check(item(old)?.title == "Zoom" && item(old)?.app == "Zoom", "название — meta.app")
             check(item(old)?.startedAt == at(1), "startedAt из meta")

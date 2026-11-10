@@ -150,5 +150,42 @@ enum QueueTests {
             _ = q2.waitUntilIdle(timeout: 10)
             if case .failure(let msg) = outcome2 { check(msg.contains("/nonexistent/python"), "ошибка называет путь: \(msg)") } else { check(false, "ошибка ожидалась") }
         }
+
+        test("очередь: сбой без error.txt виден как «Ошибка» до новой постановки, отмена следа не оставляет") {
+            let root = tempDir("queue-failure")
+            let python = try makeFakePython(in: root, log: root.appendingPathComponent("log.txt"))
+            let store = MeetingStore(outputDir: root.appendingPathComponent("transcripts"))
+            let library = MeetingLibrary(store: store)
+            let idle = ProcessingQueue.Snapshot(running: nil, pending: [])
+            let bad = makeMeeting(store.outputDir, "1 bad", app: "Zoom", started: localDate(2026, 11, 10, 10, 0))
+            let lost = makeMeeting(store.outputDir, "2 lost", app: "Zoom", started: localDate(2026, 11, 10, 11, 0))
+            func status(_ dir: URL, _ snapshot: ProcessingQueue.Snapshot) -> MeetingStatus? {
+                library.items(queue: snapshot).first { $0.id == dir.lastPathComponent }?.status
+            }
+
+            // python упал, error.txt не написал
+            let queue = ProcessingQueue(pythonPath: python.path, projectDir: root, onFinish: { _, _ in })
+            queue.enqueue(bad)
+            check(queue.waitUntilIdle(timeout: 10), "очередь отработала")
+            check(status(bad, idle) == .failed("Не удалось расшифровать: нет ffmpeg"), "текст из Outcome: \(String(describing: status(bad, idle)))")
+            queue.enqueue(bad)
+            check(status(bad, queue.snapshot()) != status(bad, idle), "повторная постановка снимает «Ошибку»: \(String(describing: status(bad, queue.snapshot())))")
+            check(queue.waitUntilIdle(timeout: 10), "повтор отработал")
+
+            // python не запустился вовсе
+            let broken = ProcessingQueue(pythonPath: "/nonexistent/python", projectDir: root, onFinish: { _, _ in })
+            broken.enqueue(lost)
+            check(broken.waitUntilIdle(timeout: 10), "очередь отработала")
+            if case .failed(let text)? = status(lost, idle) { check(text.contains("/nonexistent/python"), "ошибка называет путь: \(text)") }
+            else { check(false, "нет python → «Ошибка», а не \(String(describing: status(lost, idle)))") }
+
+            // выход из программы посреди обработки: встреча не ошибка, обработается при следующем запуске
+            let quit = makeMeeting(store.outputDir, "3 quit", app: "Zoom", started: localDate(2026, 11, 10, 12, 0))
+            queue.enqueue(quit)
+            Thread.sleep(forTimeInterval: 0.1)
+            queue.cancelAll()
+            check(queue.waitUntilIdle(timeout: 10), "отмена завершила очередь")
+            check(status(quit, idle) == .queued, "прерванная выходом — не ошибка: \(String(describing: status(quit, idle)))")
+        }
     }
 }

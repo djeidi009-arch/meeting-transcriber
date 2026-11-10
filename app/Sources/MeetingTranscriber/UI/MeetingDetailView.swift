@@ -12,7 +12,7 @@ struct MeetingDetailView: View {
 
     var body: some View {
         Group {
-            if item.status == .ready {
+            if item.isTranscribed { // и пока идёт повтор summary: транскрипт и плеер остаются
                 MeetingScreen(item: item, reveal: watched == item.id).id(item.id) // у каждой встречи свой плеер и своя прокрутка
             } else {
                 ScrollView {
@@ -27,7 +27,7 @@ struct MeetingDetailView: View {
             }
         }
         .transition(.opacity)
-        .animation(.easeOut(duration: 0.3), value: item.status == .ready)
+        .animation(.easeOut(duration: 0.3), value: item.isTranscribed)
         .overlay {
             if item.status == .ready && watched == item.id && !reduceMotion { ParticleBurst() }
         }
@@ -44,7 +44,8 @@ struct MeetingDetailView: View {
     }
 
     private func watch(_ item: MeetingItem) {
-        if case .processing = item.status { watched = item.id }
+        // повтор summary у расшифрованной встречи — не «дорасшифровалась»: каскада и частиц не надо
+        if case .processing = item.status, !item.isTranscribed { watched = item.id }
     }
 }
 
@@ -127,17 +128,21 @@ private struct MeetingScreen: View {
             PlayerBar(player: player)
             if let document {
                 HStack(alignment: .top, spacing: 16) {
+                    SpeakersCard(document: document, rename: rename)
+                        .cascadeIn(order: 0, active: reveal)
+                        .frame(width: 272)
                     VStack(spacing: 16) {
                         if player.hasVideo {
+                            // на всю ширину колонки; высота ограничена, чтобы транскрипту осталось место
                             VideoPlayer(player: player.player)
                                 .aspectRatio(16 / 9, contentMode: .fit)
+                                .frame(maxHeight: 340)
+                                .frame(maxWidth: .infinity)
+                                .background(.black)
                                 .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
                         }
-                        SpeakersCard(document: document, rename: rename)
+                        transcript(document)
                     }
-                    .cascadeIn(order: 0, active: reveal)
-                    .frame(width: 272)
-                    transcript(document)
                 }
                 .transition(.opacity)
             }
@@ -173,7 +178,7 @@ private struct MeetingScreen: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 16) {
-                    SummaryCard(document: document, failed: item.summaryFailed) { model.resummarize(item) }
+                    SummaryCard(document: document, failed: item.summaryFailed, status: item.status) { model.resummarize(item) }
                         .cascadeIn(order: 1, active: reveal)
                     TranscriptCard(document: document, currentLine: player.currentLine, seek: { start in
                         following = true

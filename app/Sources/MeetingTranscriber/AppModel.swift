@@ -76,8 +76,9 @@ final class AppModel {
             demoStatus[item.id].map { status in
                 // демо идёт тем же путём, что и настоящая обработка: этап читается из progress.json в папке
                 let status = status == .processing(nil) ? .processing(library.progress(item.dir)) : status
-                return                 MeetingItem(id: item.id, dir: item.dir, title: item.title, app: item.app, startedAt: item.startedAt,
-                            duration: item.duration, status: status, sourceFile: item.sourceFile, summaryFailed: item.summaryFailed)
+                return MeetingItem(id: item.id, dir: item.dir, title: item.title, app: item.app, startedAt: item.startedAt,
+                                   duration: item.duration, status: status, sourceFile: item.sourceFile,
+                                   summaryFailed: item.summaryFailed, isTranscribed: item.isTranscribed)
             } ?? item
         }
         for item in fresh {

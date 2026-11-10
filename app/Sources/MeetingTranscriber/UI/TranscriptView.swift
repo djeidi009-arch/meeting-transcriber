@@ -112,13 +112,24 @@ struct SpeakersCard: View {
 struct SummaryCard: View {
     let document: MeetingDocument
     let failed: Bool
+    /// Пока встреча в очереди или обрабатывается (повтор summary), вместо текста — ход этапа.
+    let status: MeetingStatus
     let retry: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Summary", systemImage: "sparkles").font(.title3.weight(.semibold))
-            let blocks = document.summaryBlocks()
-            if failed {
+            let busy = status != .ready
+            let blocks = busy ? [] : document.summaryBlocks()
+            if busy {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text(status == .queued ? "В очереди: summary начнётся, как только закончится предыдущая обработка."
+                         : ProcessingStage.summary.explanation)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            } else if failed {
                 Text("Summary не получилось").foregroundStyle(.secondary)
                 Button("Сделать summary", action: retry).buttonStyle(AccentButtonStyle())
             } else if blocks.isEmpty {

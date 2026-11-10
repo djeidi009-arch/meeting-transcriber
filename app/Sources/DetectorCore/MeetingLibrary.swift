@@ -45,9 +45,12 @@ public struct MeetingItem: Identifiable, Equatable, Sendable {
     public let status: MeetingStatus
     public let sourceFile: URL?
     public let summaryFailed: Bool
+    /// `meeting.md` есть: экран встречи показывает транскрипт, даже пока идёт повтор summary.
+    public let isTranscribed: Bool
 
     public init(id: String, dir: URL, title: String, app: String, startedAt: Date?, duration: TimeInterval?,
-                status: MeetingStatus, sourceFile: URL?, summaryFailed: Bool) {
+                status: MeetingStatus, sourceFile: URL?, summaryFailed: Bool, isTranscribed: Bool = false) {
+        self.isTranscribed = isTranscribed
         self.id = id; self.dir = dir; self.title = title; self.app = app; self.startedAt = startedAt
         self.duration = duration; self.status = status; self.sourceFile = sourceFile; self.summaryFailed = summaryFailed
     }
@@ -149,7 +152,7 @@ public final class MeetingLibrary {
                 duration: transcript(dir)?.duration ?? started.flatMap { s in ended.map { $0.timeIntervalSince(s) } },
                 status: status,
                 sourceFile: (meta["sourceFile"] as? String).map { URL(fileURLWithPath: $0) },
-                summaryFailed: summaryFailed(dir))
+                summaryFailed: summaryFailed(dir), isTranscribed: has("meeting.md"))
         }
     }
 
