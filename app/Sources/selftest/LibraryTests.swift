@@ -114,6 +114,13 @@ enum LibraryTests {
             touch(dir.appendingPathComponent("transcript.json"), transcriptJSON([(0, 1, "Я", "Заново")], duration: 1))
             check(library.transcript(dir)?.utterances.map(\.text) == ["Заново"], "после повторной обработки читается новый файл")
 
+            // старый формат: в transcript.json нет ключа duration
+            let legacy = makeMeeting(root, "legacy", app: "Zoom", started: nil, files: ["transcript.json":
+                #"{"utterances": [{"start": 0, "end": 4, "speaker": "Я", "text": "Привет"}, {"start": 10, "end": 42.5, "speaker": "Спикер 1", "text": "Добрый день"}]}"#])
+            check(library.transcript(legacy)?.utterances.map(\.text) == ["Привет", "Добрый день"], "без duration реплики на месте: \(String(describing: library.transcript(legacy)))")
+            check(library.transcript(legacy)?.duration == 42.5, "длительность — конец последней реплики")
+            check(library.items(queue: empty).first { $0.id == "legacy" }?.duration == 42.5, "длительность встречи в списке — тоже")
+
             touch(dir.appendingPathComponent("meeting.md"), meetingMD(summary: "### Кратко\nОбсудили план.\n\n### Задачи\n- Аня: макеты"))
             check(library.summaryMarkdown(dir) == "### Кратко\nОбсудили план.\n\n### Задачи\n- Аня: макеты", "summary между заголовками: \(library.summaryMarkdown(dir) ?? "nil")")
             touch(dir.appendingPathComponent("meeting.md"), meetingMD(summary: "Summary не удалось сделать: таймаут. Меню → Повторить summary"))

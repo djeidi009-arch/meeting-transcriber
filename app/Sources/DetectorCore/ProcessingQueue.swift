@@ -106,7 +106,12 @@ public final class ProcessingQueue {
         guard !pending.isEmpty else { lock.unlock(); return }
         let job = pending.removeFirst()
         let cancelled = gen != generation
-        if !cancelled { running = job }
+        if !cancelled {
+            // progress.json убитого процесса убираем до того, как задание станет видно как идущее:
+            // иначе окно покажет старый этап, а потом откатится к первому
+            try? FileManager.default.removeItem(at: job.dir.appendingPathComponent("progress.json"))
+            running = job
+        }
         lock.unlock()
         onChange()
 

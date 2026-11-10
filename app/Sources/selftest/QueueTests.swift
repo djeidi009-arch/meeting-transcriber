@@ -8,6 +8,7 @@ func makeFakePython(in root: URL, log: URL) throws -> URL {
     #!/bin/sh
     # $1=-m $2=transcriber $3=process|resummarize $4=dir
     echo "start $3 $(basename "$4") cwd=$(pwd) path=$PATH" >> "\(log.path)"
+    [ -f "$4/progress.json" ] && echo "stale-progress $(basename "$4")" >> "\(log.path)"
     sleep 0.3
     case "$4" in
       *sumfail*) echo "загрузка модели" >&2; echo "Summary не удалось сделать: истёк таймаут" >&2; exit 2;;
@@ -89,6 +90,33 @@ enum QueueTests {
             check(states.last == S(running: nil, pending: []), "после завершения снимок пуст: \(String(describing: states.last))")
             check(states.count >= 6, "onChange на каждое изменение (2 постановки, 2 старта, 2 завершения): \(states.count)")
             check(queue.snapshot() == S(running: nil, pending: []), "в конце очередь пуста")
+        }
+
+        test("очередь: progress.json от убитого процесса не доживает до старта нового задания") {
+            let root = tempDir("queue-stale")
+            let log = root.appendingPathComponent("log.txt")
+            let python = try makeFakePython(in: root, log: log)
+            let store = MeetingStore(outputDir: root.appendingPathComponent("transcripts"))
+            let dir = try store.createMeeting(app: "Zoom", bundleID: "", manual: true, startedAt: localDate(2026, 11, 10, 10, 0))
+            store.finishMeeting(dir, endedAt: localDate(2026, 11, 10, 10, 30))
+            touch(dir.appendingPathComponent("progress.json"), #"{"stage": "summary", "fraction": null}"#)
+            let library = MeetingLibrary(store: store)
+            let lock = NSLock()
+            var seen: [MeetingStatus] = []
+            var queue: ProcessingQueue!
+            queue = ProcessingQueue(pythonPath: python.path, projectDir: root,
+                                    onChange: {
+                                        guard let status = library.items(queue: queue.snapshot()).first?.status else { return }
+                                        lock.lock(); seen.append(status); lock.unlock()
+                                    },
+                                    onFinish: { _, _ in })
+            queue.enqueue(dir)
+            check(queue.waitUntilIdle(timeout: 10), "очередь отработала")
+            lock.lock(); let statuses = seen; lock.unlock()
+            check(statuses.contains(.processing(nil)), "на старте этап неизвестен: \(statuses)")
+            check(!statuses.contains(.processing(ProgressInfo(stage: .summary, fraction: nil))), "старый этап «Summary» не показан: \(statuses)")
+            let lines = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+            check(lines.contains("start process") && !lines.contains("stale-progress"), "обработка стартует без чужого progress.json: \(lines)")
         }
 
         test("очередь: error.txt важнее stderr, нет python — понятная ошибка") {

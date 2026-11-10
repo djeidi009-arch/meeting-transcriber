@@ -66,6 +66,13 @@ public struct Transcript: Codable, Equatable, Sendable {
     public let utterances: [Utterance]
     public let duration: Double
     public init(utterances: [Utterance], duration: Double) { self.utterances = utterances; self.duration = duration }
+
+    // в старых transcript.json ключа duration нет — берём конец последней реплики
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        utterances = try c.decode([Utterance].self, forKey: .utterances)
+        duration = try c.decodeIfPresent(Double.self, forKey: .duration) ?? utterances.map(\.end).max() ?? 0
+    }
 }
 
 /// Правки пользователя из `user.json`: пишет только приложение, Python читает.
