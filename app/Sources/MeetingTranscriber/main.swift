@@ -74,6 +74,6 @@ MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = StatusMenu()
     app.delegate = delegate
-    app.setActivationPolicy(.accessory)
+    app.setActivationPolicy(.regular) // обычное приложение: значок в Dock и окно
     app.run()
 }

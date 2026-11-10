@@ -13,6 +13,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/MeetingTranscriber"
 cp "$ROOT/app/Resources/Info.plist" "$APP/Contents/Info.plist"
+# Иконка нарисована кодом (asset-каталогов без Xcode нет); файл лежит в репозитории, пересоздаётся при пропаже.
+ICON="$ROOT/app/Resources/AppIcon.icns"
+[ -f "$ICON" ] || swift "$ROOT/scripts/make_icon.swift" "$ICON"
+cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
 # Папка проекта — рабочий каталог для `python -m transcriber`.
 /usr/libexec/PlistBuddy -c "Set :MTProjectDir $ROOT" "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null

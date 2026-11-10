@@ -4,6 +4,8 @@ import UserNotifications
 /// Уведомления: UNUserNotificationCenter в собранном .app, иначе (или без разрешения) — osascript.
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private var authorized = false
+    /// Клик по уведомлению: показать встречу (папку) в окне.
+    var onOpen: ((URL) -> Void)?
     private let canUseCenter = Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil
 
     func setup() {
@@ -15,7 +17,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    /// - Parameter open: файл, который откроется по клику на уведомление.
+    /// - Parameter open: папка встречи, которая откроется в окне по клику на уведомление.
     func notify(title: String, body: String, open: URL? = nil) {
         if canUseCenter && authorized {
             let content = UNMutableNotificationContent()
@@ -32,9 +34,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Клик по такому уведомлению открывает «Редактор скриптов», а не файл, поэтому подсказываем путь через меню.
+    /// Клик по такому уведомлению открывает «Редактор скриптов», а не встречу, поэтому подсказываем путь через меню.
     private func osascript(title: String, body: String, hasFile: Bool = false) {
-        let body = hasFile ? "\(body) — открыть: меню MeetingTranscriber → Последние встречи" : body
+        let body = hasFile ? "\(body) — открыть: Транскрибатор → Последние встречи" : body
         func esc(_ s: String) -> String {
             s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         }
@@ -52,7 +54,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         if let path = response.notification.request.content.userInfo["open"] as? String {
-            DispatchQueue.main.async { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+            DispatchQueue.main.async { self.onOpen?(URL(fileURLWithPath: path)) }
         }
         completionHandler()
     }

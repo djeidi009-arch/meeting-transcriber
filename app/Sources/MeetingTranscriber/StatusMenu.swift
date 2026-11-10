@@ -15,7 +15,10 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var config: AppConfig!
     private var store: MeetingStore!
-    private var queue: ProcessingQueue!
+    private var queue: ProcessingQueue?     // nil в демо
+    private var model: AppModel!
+    private var window: MainWindow?
+    private let isDemo = CommandLine.arguments.contains("--demo")
     private var detector: MeetingDetector!
 
     private var recordingDir: URL?
@@ -41,6 +44,14 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let projectDir = AppPaths.projectDir()
         config = AppConfig.load(projectDir: projectDir)
+        if isDemo {
+            // демо: выдуманные встречи во временной папке; микрофон, очередь и реальные встречи не трогаем
+            guard let dir = try? AppModel.demoDir() else {
+                FileHandle.standardError.write(Data("Не удалось создать демо-библиотеку\n".utf8))
+                exit(1)
+            }
+            config.outputDir = dir
+        }
         store = MeetingStore(outputDir: config.outputDir)
         detector = MeetingDetector(config: DetectorConfig.builtIn(
             extraBundleIDs: config.extraBundleIDs,
@@ -51,43 +62,77 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if config.claudePath.hasPrefix("/") {
             extraPath.insert((config.claudePath as NSString).deletingLastPathComponent, at: 0)
         }
-        queue = ProcessingQueue(
-            pythonPath: config.pythonPath, projectDir: projectDir, extraPath: extraPath,
-            logURL: AppPaths.logDir.appendingPathComponent("processing.log"),
-            onBusyChange: { busy in Task { @MainActor in self.processing = busy; self.refreshTitle() } },
-            onFinish: { job, outcome in Task { @MainActor in self.processingFinished(job, outcome) } })
-
-        recorder.onUnexpectedStop = { error in
-            Task { @MainActor in self.recordingFailed(error) }
+        if !isDemo {
+            queue = ProcessingQueue(
+                pythonPath: config.pythonPath, projectDir: projectDir, extraPath: extraPath,
+                logURL: AppPaths.logDir.appendingPathComponent("processing.log"),
+                onBusyChange: { busy in Task { @MainActor in self.processing = busy; self.refreshTitle() } },
+                onChange: { Task { @MainActor in self.model.refresh() } },
+                onFinish: { job, outcome in Task { @MainActor in self.processingFinished(job, outcome) } })
         }
+        model = AppModel(store: store, queue: queue, library: MeetingLibrary(store: store), isDemo: isDemo)
+        model.openWindow = { [unowned self] in showWindow() }
+        model.chooseFiles = { [unowned self] in importClicked() }
+        notifier.onOpen = { [unowned self] dir in model.show(dir) }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         menu.delegate = self
         statusItem.menu = menu
+        NSApp.mainMenu = MainMenu.build(target: self)
         refreshTitle()
 
-        notifier.setup()
-        Task {
-            await Permissions.requestIfNeeded()
-            self.checkPermissions(notifyIfMissing: true)
+        if isDemo {
+            model.startDemo()
+        } else {
+            model.toggleRecording = { [unowned self] in
+                if recordingDir != nil { stopClicked() } else { startClicked() }
+            }
+            recorder.onUnexpectedStop = { error in
+                Task { @MainActor in self.recordingFailed(error) }
+            }
+            notifier.setup()
+            Task {
+                await Permissions.requestIfNeeded()
+                self.checkPermissions(notifyIfMissing: true)
+            }
+            // Встречи, оставшиеся после выхода или сбоя посреди записи.
+            for dir in store.recoverPending() { queue?.enqueue(dir) }
+            timers.append(Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+                Task { @MainActor in self.poll() }
+            })
         }
-
-        // Встречи, оставшиеся после выхода или сбоя посреди записи.
-        for dir in store.recoverPending() { queue.enqueue(dir) }
-
-        timers.append(Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-            Task { @MainActor in self.poll() }
-        })
+        model.refresh()
         timers.append(Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            Task { @MainActor in self.refreshTitle() }
+            Task { @MainActor in
+                self.refreshTitle()
+                self.model.tick(windowVisible: self.window?.window.isVisible ?? false)
+            }
         })
+
+        // LaunchAgent запускает с --background: при входе в систему окно не выскакивает.
+        if !CommandLine.arguments.contains("--background") { showWindow() }
     }
+
+    // MARK: - окно
+
+    @objc func showWindow() {
+        if window == nil { window = MainWindow(model: model) }
+        window?.show()
+    }
+
+    /// Клик по значку в Dock у запущенной программы.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showWindow()
+        return false
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminating { return .terminateLater }
         terminating = true
         timers.forEach { $0.invalidate() }
-        queue.cancelAll()
+        queue?.cancelAll()
         guard recordingDir != nil || transitioning else { return .terminateNow }
         // Корректно закрыть файлы и дописать endedAt; в обработку встреча уйдёт при следующем запуске.
         // Если как раз идёт старт или остановка — сначала дождаться её конца.
@@ -131,7 +176,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startRecording(app: String, bundleID: String, manual: Bool) async {
         guard recordingDir == nil, !transitioning, !terminating else { return }
         transitioning = true
-        defer { transitioning = false; refreshTitle() }
+        defer { transitioning = false; syncRecording() }
         let dir: URL
         do {
             dir = try store.createMeeting(app: app, bundleID: bundleID, manual: manual)
@@ -159,14 +204,22 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func stopRecording(manual: Bool, enqueue: Bool = true) async {
         guard let dir = recordingDir, !transitioning else { return }
         transitioning = true
-        defer { transitioning = false; refreshTitle() }
+        defer { transitioning = false; syncRecording() }
         if manual { detector.noteManualStop() }
         await recorder.stop()
         recordingDir = nil
         recordingStart = nil
         if store.finishMeeting(dir), enqueue {
-            queue.enqueue(dir)
+            queue?.enqueue(dir)
         }
+    }
+
+    /// Состояние записи — в модель: окно и меню показывают одно и то же.
+    private func syncRecording() {
+        model.isRecording = recordingDir != nil
+        model.recordingStartedAt = recordingStart
+        model.refresh()
+        refreshTitle()
     }
 
     private func recordingFailed(_ error: Error) {
@@ -175,17 +228,17 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         recordingStart = nil
         detector.noteManualStop()
         // Recorder сообщает о сбое уже после закрытия файлов. При выходе — обработка при следующем запуске.
-        if store.finishMeeting(dir), !terminating { queue.enqueue(dir) }
+        if store.finishMeeting(dir), !terminating { queue?.enqueue(dir) }
         checkPermissions(notifyIfMissing: false)
         notifier.notify(title: "Запись прервалась", body: error.localizedDescription)
-        refreshTitle()
+        syncRecording()
     }
 
     // MARK: - обработка
 
     private func processingFinished(_ job: ProcessingQueue.Job, _ outcome: ProcessingQueue.Outcome) {
         let name = job.dir.lastPathComponent
-        let md = job.dir.appendingPathComponent("meeting.md")
+        let md = job.dir // по клику встреча открывается в окне
         switch (outcome, job.kind) {
         case (.success, .process):
             notifier.notify(title: "Встреча расшифрована", body: name, open: md)
@@ -197,6 +250,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case (.failure(let message), _):
             notifier.notify(title: "Ошибка обработки: \(name)", body: message)
         }
+        model.refresh()
         refreshTitle()
     }
 
@@ -211,7 +265,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             let text = "Нет доступа к " + missing.joined(separator: " и ") + ". Без него встречи не записываются."
             permissionProblem = text
-            if notifyIfMissing { notifier.notify(title: "MeetingTranscriber: нужен доступ", body: text) }
+            if notifyIfMissing { notifier.notify(title: "Транскрибатор: нужен доступ", body: text) }
         }
     }
 
@@ -219,7 +273,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func refreshTitle() {
         guard let button = statusItem?.button else { return }
-        if let start = recordingStart {
+        if let start = model.recordingStartedAt {
             let s = Int(Date().timeIntervalSince(start))
             let time = s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
                                  : String(format: "%02d:%02d", s / 60, s % 60)
@@ -239,12 +293,14 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         if Permissions.microphoneGranted && Permissions.screenGranted { permissionProblem = nil }
 
-        if recordingDir != nil {
-            menu.addItem(disabled("Идёт запись: \(recordingApp)"))
-            menu.addItem(item("Остановить запись", #selector(stopClicked)))
+        menu.addItem(item("Открыть Транскрибатор", #selector(showWindow)))
+        menu.addItem(.separator())
+        if model.isRecording {
+            menu.addItem(disabled(recordingApp.isEmpty ? "Идёт запись" : "Идёт запись: \(recordingApp)"))
+            menu.addItem(item("Остановить запись", #selector(toggleRecordingClicked)))
         } else {
             if processing { menu.addItem(disabled("Идёт обработка…")) }
-            menu.addItem(item("Начать запись", #selector(startClicked)))
+            menu.addItem(item("Начать запись", #selector(toggleRecordingClicked)))
         }
         menu.addItem(item("Загрузить аудио или видео…", #selector(importClicked)))
         let auto = item("Записывать автоматически", #selector(toggleAuto))
@@ -294,31 +350,32 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return i
     }
 
-    @objc private func startClicked() {
+    /// Через модель: в демо запись подменена и микрофон не трогается.
+    @objc private func toggleRecordingClicked() {
+        model.toggleRecording()
+    }
+
+    private func startClicked() {
         // Если созвон из списка уже держит микрофон — назвать папку по нему.
         let known = lastSnapshot?.micBundleIDs.lazy.compactMap { self.detector.config.match($0) }.first
         Task { await startRecording(app: known?.name ?? "Встреча", bundleID: known?.prefix ?? "", manual: true) }
     }
 
-    @objc private func stopClicked() {
+    private func stopClicked() {
         Task { await stopRecording(manual: true) }
     }
 
-    @objc private func importClicked() {
+    @objc func importClicked() {
         let panel = NSOpenPanel()
         panel.title = "Выберите аудио или видео для расшифровки"
         panel.prompt = "Расшифровать"
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.audio, .movie]
-        NSApp.activate(ignoringOtherApps: true) // у приложения строки меню окно иначе прячется за другими
+        NSApp.activate(ignoringOtherApps: true) // вызов из строки меню: панель иначе прячется за другими окнами
         guard panel.runModal() == .OK else { return }
-        for file in panel.urls {
-            do {
-                queue.enqueue(try store.createImport(file: file))
-            } catch {
-                notifier.notify(title: "Файл не добавлен", body: "\(file.lastPathComponent): \(error.localizedDescription)")
-            }
+        for error in model.importFiles(panel.urls) {
+            notifier.notify(title: "Файл не добавлен", body: error)
         }
         refreshTitle()
     }
@@ -329,12 +386,13 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openMeeting(_ sender: NSMenuItem) {
         guard let dir = sender.representedObject as? URL else { return }
-        NSWorkspace.shared.open(dir.appendingPathComponent("meeting.md"))
+        model.show(dir)
     }
 
     @objc private func resummarize() {
-        guard let dir = store.lastMeetingWithTranscript() else { return }
-        queue.enqueue(dir, kind: .resummarize)
+        guard let dir = store.lastMeetingWithTranscript(),
+              let item = model.items.first(where: { $0.id == dir.lastPathComponent }) else { return }
+        model.resummarize(item)
     }
 
     @objc private func openOutput() {
