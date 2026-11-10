@@ -219,3 +219,48 @@ func show(_ dir: URL)                 // выбрать встречу и отк
 ## Что построили законченные таски
 
 <!-- дописывается по мере сборки -->
+
+### T01 — данные для окна (сделано)
+
+- Python: `progress.write(meeting_dir, stage, fraction=None)`, `progress.clear(meeting_dir)`, константы `EXTRACT/ASR/DIARIZE/SUMMARY`; `userdata.load(dir) -> UserData(title, speakers)`, `UserData.name(label)`; `render_markdown(..., user=UserData())`, `transcript_text(utterances, user=UserData())`; `pipeline.resummarize(...) -> str | None` — возвращает причину сбоя summary (CLI → код 2), исключение не бросает.
+- `progress.json`: в этапе `asr` `fraction` = номер дорожки / число дорожек (0, 0.5), в остальных `null`. Если Python убит сигналом, файл остаётся — читать его только у идущего задания.
+- Swift `DetectorCore`: всё из §3 с теми же сигнатурами. Сверх того: публичные `init` у `ProcessingQueue.Job(dir:kind:)`, `Snapshot(running:pending:)`, `MeetingItem`, `ProgressInfo`, `Utterance`, `Transcript`, `UserData(title:speakers:)`, `MeetingDocument.Line`; `Utterance`/`Transcript` — `Codable`; `MeetingDocument.durationText(_:) -> String` («1 ч 5 мин»); секция встреч без даты называется «Без даты».
+- **Потоки.** `ProcessingQueue.onChange` при постановке вызывается с потока, вызвавшего `enqueue`, при старте и завершении — с фоновой очереди: переносить на main в обоих случаях. `MeetingLibrary.search` синхронный и читает транскрипты — **с главного потока не звать** (выносить в `Task.detached`, результат на main). Первый `items()` разбирает все `transcript.json` (дальше кеш по времени изменения) — первый вызов тоже не на главном потоке.
+- `summaryMarkdown(dir)` возвращает `nil` и при сбое summary, и когда summary нет; сбой отличать по `item.summaryFailed`.
+- Проверки после таска: 62 pytest, 192 проверки Swift.
+- Ремонт по ревью: в `transcript.json` ключ `duration` необязателен (старый формат) — без него длительность равна концу последней реплики. `ProcessingQueue` удаляет старый `progress.json` в папке задания до того, как оно становится `running` (до `onChange` о старте) — этап из прошлого запуска не показывается. Проверок Swift: 199.
+
+### T02 — приложение с окном (сделано)
+
+- Файлы: `AppModel.swift`, `Demo.swift`, `MainWindow.swift`, `UI/Theme.swift`, `UI/RootView.swift`, `UI/MeetingListView.swift`, `UI/MeetingDetailView.swift` (сейчас — простая карточка-заглушка: её заменяет таск 03); `scripts/make_icon.swift` → `app/Resources/AppIcon.icns`.
+- `AppModel` как в §4, сверх того: `isLoaded: Bool`, `hits: [SearchHit]?` (nil — запрос пуст), `isSearching: Bool`, `seekRequest: Double?` (таймкод найденного фрагмента: экран встречи ставит плеер и сбрасывает в nil), `chooseFiles: () -> Void` (панель выбора файлов), `openWindow: () -> Void`, `tick(windowVisible:)`.
+- Демо: `AppModel.demoDir() throws -> URL`, `startDemo()`, `simulateProcessing(_ dir:, stages:, loop:)`; статусы демо подменяются через `demoStatus[id]`, `progress.json` в демо не пишется. Звука у демо-встреч пока нет.
+- `MainWindow(model:)`, `.window`, `.show()`; `MainMenu.build(target:)`; `StatusMenu.showWindow()`, `StatusMenu.importClicked()`.
+- `Notifier.onOpen: ((URL) -> Void)?`; параметр `open:` у `notify` — папка встречи, а не `meeting.md`.
+- `Theme`: `accent`, `onAccent`, `page`, `card`, `cardRadius`, `speakerColor(_:)`; `View.card(padding:)`, `Pill(text:systemImage:tone:)`, `StatusPill(item:)`, `AccentButtonStyle`; расширения `MeetingItem.timeText/dateText/durationText/stage/errorText`, `MeetingStatus.isFailed`.
+- Перетаскивания файлов, `Recorder.onLevel`, `--screenshots` ещё нет (таск 04). Pow подключён и используется (блик на пилюле), DSWaveformImage только подключён.
+- Как исполнитель проверял облик: запуск `.app --demo`, снимок своего окна по его номеру из CGWindowList (скрипты-образцы: scratchpad `t02/shot.sh`, `t02/winlist.swift`). Демо делит UserDefaults с установленной копией (тот же bundle id) — новые ключи заводить с префиксом `window.`.
+
+### T03 — экран встречи (сделано)
+
+- Файлы: `UI/MeetingDetailView.swift`, `UI/PlayerModel.swift`, `UI/PlayerBar.swift`, `UI/TranscriptView.swift`, `UI/Export.swift`.
+- `DetectorCore`: `MeetingDocument.shortTimecode(_:) -> String` («мм:сс», от часа «ч:мм:сс»), `lineIndex(at:) -> Int?`, `enum SummaryBlock { heading, bullet, paragraph }`, `summaryBlocks() -> [SummaryBlock]`.
+- Приложение: `PlayerModel` (`load(item:) async`, `stop/play/pause/toggle`, `seek(to:)`, `currentTime`, `duration`, `isPlaying`, `hasVideo`, `hasMedia`, `isLoaded`, `missingVideo`, `rate`, `levels`, `currentLine`, `document`, `player`); `PlayerBar(player:)`; `MeetingHeader(item:document:)`; `EditableText`, `SpeakerAvatar`, `SpeakersCard`, `SummaryCard`, `TranscriptCard` (+ `lineID(_:)`); `Export.Format`, `Export.data(_:as:)`, `save`, `copy`, `alert`, `attributed`, `pdf`; `Theme.accentInk`; `AppModel.demoAudioReady: Set<MeetingItem.ID>` (звук демо-встреч синтезируется).
+- Экран встречи сейчас показывает готовую встречу; для статусов «идёт запись», «в очереди», «расшифровывается», «ошибка» — простая карточка. Экран обработки, живая волна записи, каскадное появление реплик и частицы — таск 04.
+- Проверок Swift: 206. Снимки-образцы экрана: scratchpad `t03/*.png`.
+
+### T04 — загрузка, обработка, анимации, скриншоты (сделано)
+
+- Файлы: `Screenshots.swift`, `UI/ImportFlow.swift`, `UI/ProcessingView.swift`, `UI/Effects/{Aurora,PulseWave,ParticleBurst,CascadeIn}.swift`; `docs/screenshots/{light,dark}-{meeting,processing,recording,drop}.png`.
+- `AppModel`: `recordingLevels: [Float]` (до 540 значений), `pushLevel(_:)`, `dropTargeted`, `importFlight: (id: UUID, name: String)?`, `notice: String?`, `lastStage: [ID: ProcessingStage]`, `demoQueueTail`. `importFiles` сам отсеивает не-медиа, выбирает первую принятую встречу, ставит `importFlight` и `notice`.
+- `Recorder.onLevel: ((Float) -> Void)?`; `Screenshots.run(model:window:into:) async -> Int32`; `MeetingStateView(item:)`; `View.importFlow()`, `View.cascadeIn(order:active:)`; `Aurora`, `PulseWave(energy:tint:)`, `ParticleBurst`; `ProcessingStage.symbol/explanation`; `TranscriptCard(cascade:)`.
+- Демо пишет `progress.json` в формате Python и ведёт встречи по одной, как очередь.
+- `--screenshots` снимает окно системным `screencapture` — нужен доступ «Запись экрана» у программы, из которой запускают; без него выходит с кодом 1.
+- Упавший шаг обработки помнится только в памяти программы: после перезапуска ошибка показывается без отмеченного шага.
+
+### F1 — правки по код-ревью (сделано)
+
+- `MeetingItem.isTranscribed: Bool` (есть `meeting.md`); экран встречи выбирается по нему, а не по `status == .ready` — при повторе summary транскрипт остаётся.
+- `ProcessingQueue` при `.failure` сама пишет `error.txt` с текстом из `Outcome`, если Python свежего не написал (при `cancelAll` — нет).
+- `SummaryCard(document:failed:status:retry:)`. Видео — панелью над прокруткой, на ширину основной колонки.
+- Проверок Swift: 216.

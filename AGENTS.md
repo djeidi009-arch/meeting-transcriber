@@ -1,50 +1,51 @@
 <!-- autopilot:start -->
 # Транскрибатор встреч
 
-Локальная программа для macOS: записывает созвоны (Zoom, Google Meet, Телемост, Контур.Толк и др.), транскрибирует с разбивкой по спикерам и делает краткое summary.
+Локальная программа для macOS: окно «Транскрибатор» + значок в строке меню. Записывает созвоны (Zoom, Meet, Телемост, Контур.Толк и др.) или берёт загруженные аудио/видео, транскрибирует по спикерам, делает summary.
+Устройство, контракт папки встречи, статусы, потоки — `docs/architecture.md`; почему так — `docs/adr/`; словарь — `CONTEXT.md`.
 
 ## Команды
 
 | Команда | Что делает |
 |---------|------------|
 | `make setup` | `uv sync`: Python 3.12 + `.venv` |
-| `make check` | pytest (48) + Swift `selftest` (86 проверок) — единственная проверка проекта |
+| `make check` | pytest (62) + Swift `selftest` (216), ~40 с — единственная проверка проекта |
 | `uv run pytest tests/test_merge.py` | один файл тестов |
 | `cd app && swift run selftest` | только Swift-проверки |
-| `make app` | собрать `build/MeetingTranscriber.app` (release + Info.plist + ad-hoc подпись) |
-| `build/MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber --probe` | снимок: кто держит микрофон, какие окна видны (`--watch` — раз в 2 с, с событиями детектора) |
-| `.venv/bin/python -m transcriber process "<папка встречи>"` | обработать запись → `meeting.md`; на готовой папке ничего не делает |
+| `make app` | `build/MeetingTranscriber.app` (release + Info.plist + иконка + ad-hoc подпись), ~50 с; одно предупреждение в `Recorder.swift` (non-Sendable capture) — норма |
+| `build/MeetingTranscriber.app/Contents/MacOS/MeetingTranscriber --demo -ApplePersistenceIgnoreState YES` | окно с выдуманными встречами, без микрофона, очереди и реальных данных. Флаг `-ApplePersistence…` обязателен: после падения иначе висит диалог восстановления окон |
+| то же с `--demo --screenshots <папка> -ApplePersistenceIgnoreState YES` | 8 PNG (`light-*`/`dark-*`), код 0; нужен доступ «Запись экрана» у запускающей программы |
+| `.venv/bin/python -m transcriber process "<папка встречи>"` | обработать → `meeting.md`; на готовой папке ничего не делает |
 | `.venv/bin/python -m transcriber resummarize "<папка встречи>"` | заново summary из `transcript.json` (не запускалась при описании) |
-| `make install` / `make uninstall` | LaunchAgent + копия в `~/Applications` + `config.json` / снятие. НЕ проверены, трогают систему; сухой прогон: `MT_HOME=<dir> MT_SKIP_LAUNCHCTL=1` |
+| `make install` / `make uninstall` | LaunchAgent (запуск с `--background`) + копия в `~/Applications` + `config.json` / снятие. НЕ проверены, трогают систему; сухой прогон: `MT_HOME=<dir> MT_SKIP_LAUNCHCTL=1` |
+
+Запуск без `--demo` (рекордер, очередь, реальные встречи) в сборке с окном ни разу не проверяли. Установленную копию из LaunchAgent не трогать; свой процесс завершать по PID.
 
 ## Где что
 
-- `transcriber/` — Python-пайплайн; вход `__main__.py` → `pipeline.py` (`process`, `resummarize`; зависимости asr/diarize/summarize передаются параметром — так тесты подставляют фейки).
-- `transcriber/merge.py` — чистая логика склейки спикеров и удаления эха, главный шов тестов; `vad.py` режет речь на участки ≤ 28 с перед `asr.py`.
-- `transcriber/models_cache.py` — загрузка HF-моделей; `diarize.py` — pyannote `speaker-diarization-community-1`.
-- `transcriber/config.py` и `app/Sources/DetectorCore/AppConfig.swift` — две реализации одного `~/.config/meeting-transcriber/config.json`; ключ меняешь — правь обе.
-- `app/Package.swift` — три таргета: `DetectorCore` (только Foundation: детектор, `MeetingStore`, `ProcessingQueue`, `TrackAligner`), `MeetingTranscriber` (AppKit/CoreAudio/ScreenCaptureKit: `Recorder`, `SystemProbe`, `StatusMenu`, `Notifier`), `selftest` (замена XCTest, его нет).
-- `app/Sources/selftest/` — Swift-проверки; новый набор `XxxTests.all()` добавь вызовом в конец `selftest/main.swift`.
-- `scripts/build_app.sh` (сборка .app), `scripts/install.sh`, `scripts/uninstall.sh`.
-- Контракт Swift ↔ Python — папка встречи `<outputDir>/<ГГГГ-ММ-ДД ЧЧ-ММ> <Приложение>/` (`meta.json`, `mic.caf`/`system.caf`, `transcript.json`, `meeting.md`, `error.txt`); файлы пишут `app/Sources/DetectorCore/MeetingStore.swift` и `transcriber/pipeline.py`; пользовательское описание — `README.md`.
-- Логи приложения: `~/Library/Logs/MeetingTranscriber/` (`processing.log`, `app.log` из LaunchAgent).
+- `transcriber/` — Python-пайплайн: `__main__.py` → `pipeline.py` (`process`, `resummarize`; asr/diarize/summarize передаются параметром — тесты подставляют фейки). `merge.py` — склейка спикеров и эхо, главный шов тестов; `vad.py` режет речь до 28 с; `models_cache.py` — модели HF; `diarize.py` — pyannote `speaker-diarization-community-1`; `progress.py` пишет `progress.json`; `userdata.py` читает `user.json`.
+- `transcriber/config.py` и `app/Sources/DetectorCore/AppConfig.swift` — две реализации одного `config.json`; ключ меняешь — правь обе.
+- `app/Package.swift` — таргеты: `DetectorCore` (только Foundation: всё, что тестирует `selftest`), `MeetingTranscriber` (AppKit/SwiftUI; вход `main.swift`, делегат `StatusMenu.swift`, состояние окна `AppModel.swift`, экраны `UI/`, токены `UI/Theme.swift`, `Demo.swift`, `Screenshots.swift`), `selftest` (замена XCTest, видит только `DetectorCore`; новый набор `XxxTests.all()` — в конец `selftest/main.swift`). Зависимости: DSWaveformImage, Pow.
+- Папка встречи `<outputDir>/<ГГГГ-ММ-ДД ЧЧ-ММ> <Приложение>/`: файлы, кто пишет, статус — `docs/architecture.md`.
+- `scripts/`: `build_app.sh`, `install.sh`, `uninstall.sh`, `make_icon.swift` (рисует `app/Resources/AppIcon.icns`). Логи: `~/Library/Logs/MeetingTranscriber/` (`processing.log`, `app.log`).
 
 ## Подводные камни
 
-- Подпись ad-hoc: после каждой пересборки macOS может заново спросить микрофон и запись экрана/системного аудио или молча считать доступ выключенным — выдай заново и перезапусти приложение.
-- Приложение из LaunchAgent не видит PATH из nvm: пути к `claude` и `.venv/bin/python` берутся из `~/.config/meeting-transcriber/config.json` (`claudePath`, `pythonPath`); `ProcessingQueue` добавляет к PATH дочернего процесса только `/opt/homebrew/bin`, `/usr/local/bin` и папку `claude`.
-- Модели HF берутся сначала из локального кеша (`local_files_only=True`), сеть — только если кеша нет: онлайн-проверка обновлений висела минутами. Токен — `~/.cache/huggingface/token`, библиотека читает сама.
-- `torch==2.8.0`, `torchaudio==2.8.0`, `torchcodec==0.7.0` закреплены в `pyproject.toml` вместе — не обновляй по одному.
-- Код выхода `process`: 0 — ок, 1 — сбой, 2 — расшифровка готова, сбой только summary (`ProcessingQueue.exitSummaryFailed`; не путать с ошибкой). Починка — `resummarize`.
-- Summary — `claude -p`: нужен живой вход в Claude Code CLI (подписка), иначе summary падает, а транскрипт остаётся.
-- Весь текст для пользователя — по-русски, имена в коде — по-английски. Тяжёлые модели в тестах не грузить.
+- Подпись ad-hoc: после пересборки macOS может заново спросить микрофон и запись экрана или молча считать доступ выключенным — выдай заново и перезапусти приложение.
+- LaunchAgent не видит PATH из nvm: `claude` и `.venv/bin/python` берутся из `config.json` (`claudePath`, `pythonPath`); `ProcessingQueue` добавляет к PATH только `/opt/homebrew/bin`, `/usr/local/bin` и папку `claude`.
+- Модели HF — сначала из локального кеша (`local_files_only=True`): онлайн-проверка висела минутами. Токен — `~/.cache/huggingface/token`.
+- `torch==2.8.0`, `torchaudio==2.8.0`, `torchcodec==0.7.0` закреплены вместе — не обновляй по одному.
+- Код выхода `process`/`resummarize`: 0 — ок, 1 — сбой, 2 — транскрипт готов, сбой только summary (`ProcessingQueue.exitSummaryFailed`). Summary — `claude -p`, нужен живой вход в CLI.
+- Без Xcode нет `actool` и `metal`: `resources:`, asset-каталоги, `.metal`, `Bundle.module` нельзя; Vortex и Inferno не собираются; из Pow нельзя `.poof`, `.anvil`, `SmokeEffect`. Без `linkedFramework("AVKit")` `VideoPlayer` падает при показе; `platforms: [.macOS("26.0")]` — строкой, `.v26` требует tools 6.2.
+- Bundle id `ru.local.meeting-transcriber`, исполняемый файл и имя бандла `MeetingTranscriber` не менять: на них разрешения и LaunchAgent. Демо делит `UserDefaults` с установленной копией — новые ключи с префиксом `window.`.
+- `MeetingLibrary.search` и первый `items()` читают все транскрипты — не с главного потока.
+- Весь текст пользователю — по-русски, имена в коде — по-английски. Тяжёлые модели и `claude` в тестах не грузить.
 
 ## Окружение
 
-- macOS 15+, Apple Silicon; только Command Line Tools (Xcode нет), SwiftPM; Python 3.12 строго (`>=3.12,<3.13`) через `uv`; системный `python3` не использовать.
-- `ffmpeg` и `uv` из Homebrew; `claude` в PATH (его абсолютный путь пишет `install.sh`).
-- Настройки: `~/.config/meeting-transcriber/config.json` (`outputDir` по умолчанию `~/transcripts`, `language`, `claudePath`, `pythonPath`, `summaryTimeoutSec`, `extraBundleIDs`, `extraTitlePatterns`); `autoRecord` — в `UserDefaults` приложения.
-- Сети нет, кроме `claude -p` и первой загрузки моделей HF.
+- macOS 26+, Apple Silicon; только Command Line Tools (Xcode нет); Python 3.12 строго через `uv`, системный `python3` не использовать; `ffmpeg` и `uv` из Homebrew; `claude` в PATH (абсолютный путь пишет `install.sh`).
+- `~/.config/meeting-transcriber/config.json`: `outputDir` (по умолчанию `~/transcripts`), `language`, `claudePath`, `pythonPath`, `summaryTimeoutSec`, `extraBundleIDs`, `extraTitlePatterns`; `autoRecord` (выкл. по умолчанию) — в `UserDefaults`.
+- Аргументы приложения: `--background` (без окна при старте; ставит LaunchAgent), `--demo`, `--screenshots <папка>` (только с `--demo`), `--probe` [`--watch`] — снимок, кто держит микрофон. Сети нет, кроме `claude -p` и первой загрузки моделей HF.
 
 ## Как здесь работает Autopilot
 
