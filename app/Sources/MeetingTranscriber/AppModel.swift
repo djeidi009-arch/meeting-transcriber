@@ -34,6 +34,8 @@ final class AppModel {
     // демо: статусы «в очереди/расшифровывается» вместо настоящей очереди
     @ObservationIgnored var demoStatus: [MeetingItem.ID: MeetingStatus] = [:]
     @ObservationIgnored var demoRecordingDir: URL?
+    /// демо: встречи, которым уже синтезирован звук, — экран встречи перезагружает плеер, когда он появился
+    var demoAudioReady: Set<MeetingItem.ID> = []
 
     init(store: MeetingStore, queue: ProcessingQueue?, library: MeetingLibrary, isDemo: Bool) {
         self.store = store

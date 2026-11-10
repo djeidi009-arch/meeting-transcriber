@@ -85,6 +85,33 @@ public struct MeetingDocument: Equatable {
         return order.map { (label: $0.label, name: $0.name, share: sums[$0.label]! / total) }
     }
 
+    /// Таймкод для экрана: «мм:сс», от часа — «ч:мм:сс».
+    public static func shortTimecode(_ seconds: Double) -> String {
+        let total = Int(max(0, seconds))
+        let tail = String(format: "%02d:%02d", total % 3600 / 60, total % 60)
+        return total >= 3600 ? "\(total / 3600):\(tail)" : tail
+    }
+
+    /// Номер реплики, которая звучит в этот момент: последняя, начавшаяся не позже `time`.
+    public func lineIndex(at time: Double) -> Int? {
+        lines.lastIndex { $0.start <= time }
+    }
+
+    public enum SummaryBlock: Equatable { case heading(String), bullet(String), paragraph(String) }
+
+    /// Summary по блокам — для отрисовки на экране и в DOCX/PDF (жирный внутри строки остаётся разметкой).
+    public func summaryBlocks() -> [SummaryBlock] {
+        (summaryMarkdown ?? "").components(separatedBy: "\n").compactMap { raw in
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { return nil }
+            if line.hasPrefix("#") { return .heading(String(line.drop { $0 == "#" || $0 == " " })) }
+            if let mark = line.range(of: #"^([-*•]|\d+[.)])\s+"#, options: .regularExpression) {
+                return .bullet(String(line[mark.upperBound...]))
+            }
+            return .paragraph(line)
+        }
+    }
+
     private func dateText() -> [String] {
         guard let startedAt else { return [] }
         let formatter = DateFormatter()

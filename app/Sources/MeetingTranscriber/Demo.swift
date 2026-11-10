@@ -29,6 +29,13 @@ extension AppModel {
             simulateProcessing(dir)
         }
         refresh()
+        // звук готовым встречам — в фоне, новые первыми; экран встречи подхватит его по demoAudioReady
+        let dirs = store.allMeetings()
+        Task {
+            for dir in dirs {
+                await synthesizeAudio(dir)
+            }
+        }
     }
 
     private func demoToggleRecording(title: String = "Встреча", startedAt: Date = Date()) {
@@ -64,6 +71,7 @@ extension AppModel {
                 }
             } while loop
             finishDemo(dir)
+            await synthesizeAudio(dir)
             demoStatus[id] = nil
             refresh()
         }
@@ -101,5 +109,43 @@ extension AppModel {
         try? JSONEncoder().encode(transcript).write(to: dir.appendingPathComponent("transcript.json"))
         try? Data(markdown.utf8).write(to: dir.appendingPathComponent("meeting.md"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("error.txt"))
+    }
+    /// Звук демо-встречи: «голос» каждого спикера — тон своей высоты со слоговой огибающей.
+    /// «Я» идёт в `mic.m4a`, собеседники — в `system.m4a`, как у настоящей записи.
+    private func synthesizeAudio(_ dir: URL) async {
+        guard let transcript = library.transcript(dir), !transcript.utterances.isEmpty else { return }
+        await Task.detached {
+            let rate = 16000.0
+            for (file, mine) in [("mic", true), ("system", false)] {
+                let lines = transcript.utterances.filter { ($0.speaker == "Я") == mine }
+                if lines.isEmpty { continue }
+                var samples = [Int16](repeating: 0, count: Int(transcript.duration * rate))
+                for line in lines {
+                    let pitch = 110 + Double(line.speaker.unicodeScalars.reduce(0) { $0 + Int($1.value) } % 7) * 22
+                    for index in Int(line.start * rate)..<min(samples.count, Int(line.end * rate)) {
+                        let t = Double(index) / rate
+                        // слоги ~4 в секунду; фразы по несколько секунд разной громкости, между ними паузы
+                        let phrase = Double((Int(t / 4) &* 2654435761) % 100) / 100
+                        let envelope = pow(abs(sin(.pi * 4 * t)), 0.8) * (phrase < 0.12 ? 0 : 0.08 + 0.92 * phrase * phrase)
+                        let voice = sin(2 * .pi * pitch * t) + 0.5 * sin(4 * .pi * pitch * t) + 0.25 * sin(6 * .pi * pitch * t)
+                        samples[index] = Int16(envelope * voice * 0.12 * 32767 / 1.75)
+                    }
+                }
+                func le<T: FixedWidthInteger>(_ value: T) -> Data { withUnsafeBytes(of: value.littleEndian) { Data($0) } }
+                let bytes = UInt32(samples.count * 2)
+                var wav = Data("RIFF".utf8) + le(36 + bytes) + Data("WAVEfmt ".utf8) + le(UInt32(16)) + le(UInt16(1)) + le(UInt16(1))
+                wav += le(UInt32(rate)) + le(UInt32(rate) * 2) + le(UInt16(2)) + le(UInt16(16)) + Data("data".utf8) + le(bytes)
+                samples.withUnsafeBufferPointer { wav.append(Data(buffer: $0)) } // Apple Silicon — little-endian
+                let source = dir.appendingPathComponent("\(file).wav")
+                guard (try? wav.write(to: source)) != nil else { continue }
+                let convert = Process()
+                convert.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+                convert.arguments = ["-f", "m4af", "-d", "aac", "-b", "32000", source.path, dir.appendingPathComponent("\(file).m4a").path]
+                try? convert.run()
+                convert.waitUntilExit()
+                try? FileManager.default.removeItem(at: source)
+            }
+        }.value
+        demoAudioReady.insert(dir.lastPathComponent)
     }
 }

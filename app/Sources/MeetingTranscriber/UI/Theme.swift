@@ -7,6 +7,8 @@ enum Theme {
     static let accent = Color(red: 0xD4 / 255, green: 0xF2 / 255, blue: 0x5A / 255)
     /// Текст и значки на акценте — графит, в обеих темах.
     static let onAccent = Color(red: 0.11, green: 0.12, blue: 0.13)
+    /// Акцент для тонких штрихов и точек: на светлом фоне лайм не читается, поэтому там он темнее.
+    static let accentInk = dynamic(light: NSColor(red: 0.47, green: 0.62, blue: 0.04, alpha: 1), dark: NSColor(red: 0xD4 / 255, green: 0xF2 / 255, blue: 0x5A / 255, alpha: 1))
     static let cardRadius: CGFloat = 18
 
     /// Едва серый фон под карточками.

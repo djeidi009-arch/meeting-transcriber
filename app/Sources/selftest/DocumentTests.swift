@@ -14,6 +14,20 @@ enum DocumentTests {
     ], duration: 3930)
 
     static func all() {
+        test("документ: короткий таймкод, текущая реплика, блоки summary") {
+            check(MeetingDocument.shortTimecode(0) == "00:00" && MeetingDocument.shortTimecode(65.9) == "01:05", "мм:сс: \(MeetingDocument.shortTimecode(65.9))")
+            check(MeetingDocument.shortTimecode(3725.4) == "1:02:05" && MeetingDocument.shortTimecode(-2) == "00:00", "от часа — ч:мм:сс: \(MeetingDocument.shortTimecode(3725.4))")
+
+            let doc = MeetingDocument(item: item(), transcript: transcript,
+                                      summaryMarkdown: "### Кратко\nОбсудили **бюджет**.\n\n### Задачи\n- Аня: макеты\n* Я: смета\n  1. Третье", user: UserData())
+            check(doc.lineIndex(at: 0) == nil && doc.lineIndex(at: 4.9) == nil, "до первой реплики — ничего")
+            check(doc.lineIndex(at: 5) == 0 && doc.lineIndex(at: 39) == 0, "реплика держится до начала следующей")
+            check(doc.lineIndex(at: 40) == 1 && doc.lineIndex(at: 9999) == 2, "следующая и последняя")
+            check(doc.summaryBlocks() == [.heading("Кратко"), .paragraph("Обсудили **бюджет**."), .heading("Задачи"),
+                                          .bullet("Аня: макеты"), .bullet("Я: смета"), .bullet("Третье")], "блоки: \(doc.summaryBlocks())")
+            check(MeetingDocument(item: item(), transcript: nil, summaryMarkdown: nil, user: UserData()).summaryBlocks().isEmpty, "нет summary — нет блоков")
+        }
+
         test("документ: markdown в формате meeting.md с названием и именами") {
             let user = UserData(title: "Планёрка по релизу", speakers: ["Спикер 1": "Аня"])
             let doc = MeetingDocument(item: item(title: "Планёрка по релизу"), transcript: transcript,
