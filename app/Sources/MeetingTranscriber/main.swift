@@ -69,6 +69,11 @@ let args = CommandLine.arguments
 if args.contains("--probe") {
     runProbe(watch: args.contains("--watch"))
 }
+// Скриншоты — только с выдуманными встречами: настоящие разговоры в кадр попасть не должны.
+if args.contains("--screenshots") && !args.contains("--demo") {
+    FileHandle.standardError.write(Data("--screenshots работает только вместе с --demo\n".utf8))
+    exit(1)
+}
 
 MainActor.assumeIsolated {
     let app = NSApplication.shared

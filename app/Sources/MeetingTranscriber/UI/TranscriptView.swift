@@ -161,6 +161,8 @@ struct TranscriptCard: View {
     let currentLine: Int?
     let seek: (Double) -> Void
     let rename: (_ label: String, _ name: String) -> Void
+    /// Реплики всплывают по очереди — когда встреча дорасшифровалась на глазах.
+    var cascade = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -174,6 +176,7 @@ struct TranscriptCard: View {
             ForEach(Array(document.lines.enumerated()), id: \.offset) { index, line in
                 LineRow(line: line, isCurrent: index == currentLine, seek: seek, rename: rename)
                     .id(TranscriptCard.lineID(index))
+                    .cascadeIn(order: index + 2, active: cascade)
             }
         }
         .card(padding: 10)

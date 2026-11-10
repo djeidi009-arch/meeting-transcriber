@@ -49,22 +49,41 @@ extension AppModel {
             demoRecordingDir = dir
             isRecording = true
             recordingStartedAt = startedAt
+            recordingLevels = []
             refresh()
+            // громкость «микрофона»: слоги и фразы с паузами, 20 раз в секунду — как от настоящего Recorder
+            Task {
+                while demoRecordingDir == dir {
+                    let t = Date().timeIntervalSinceReferenceDate
+                    let phrase = sin(t * 0.8) > -0.5 ? 0.25 + 0.5 * abs(sin(t * 1.9)) : 0.03
+                    pushLevel(Float(phrase * (0.3 + 0.7 * abs(sin(t * 11) * sin(t * 2.7 + 1)))))
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+            }
         }
     }
 
     /// Этапы по ~3 с каждый, затем встреча получает готовый выдуманный транскрипт.
+    /// Этап пишется в `progress.json` в формате Python — экран читает его тем же путём, что и при настоящей обработке.
+    /// Встречи идут по одной, как в настоящей очереди; та, что крутится по кругу, очередь не занимает.
     func simulateProcessing(_ dir: URL, stages: [ProcessingStage] = ProcessingStage.allCases, loop: Bool = false) {
         let id = dir.lastPathComponent
         guard demoStatus[id] == nil else { return }
         demoStatus[id] = .queued
         refresh()
-        Task {
-            try? await Task.sleep(for: .seconds(3))
+        let previous = loop ? nil : demoQueueTail
+        let progressFile = dir.appendingPathComponent("progress.json")
+        let task = Task {
+            await previous?.value
+            try? await Task.sleep(for: .seconds(1.5))
             repeat {
                 for stage in stages {
                     for step in 0..<3 {
-                        demoStatus[id] = .processing(ProgressInfo(stage: stage, fraction: Double(step) / 3))
+                        // доля известна только у распознавания — как у настоящей обработки
+                        let fraction: Any = stage == .asr ? Double(step) / 3 : NSNull()
+                        let json: [String: Any] = ["stage": stage.rawValue, "fraction": fraction, "updatedAt": MeetingStore.iso(Date())]
+                        try? JSONSerialization.data(withJSONObject: json).write(to: progressFile, options: .atomic)
+                        demoStatus[id] = .processing(nil)
                         refresh()
                         try? await Task.sleep(for: .seconds(1))
                     }
@@ -72,9 +91,11 @@ extension AppModel {
             } while loop
             finishDemo(dir)
             await synthesizeAudio(dir)
+            try? FileManager.default.removeItem(at: progressFile)
             demoStatus[id] = nil
             refresh()
         }
+        if !loop { demoQueueTail = task }
     }
 
     private func finishDemo(_ dir: URL) {

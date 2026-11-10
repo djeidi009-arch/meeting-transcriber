@@ -90,6 +90,9 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
             recorder.onUnexpectedStop = { error in
                 Task { @MainActor in self.recordingFailed(error) }
             }
+            recorder.onLevel = { level in
+                Task { @MainActor in self.model.pushLevel(level) }
+            }
             notifier.setup()
             Task {
                 await Permissions.requestIfNeeded()
@@ -111,6 +114,14 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // LaunchAgent запускает с --background: при входе в систему окно не выскакивает.
         if !CommandLine.arguments.contains("--background") { showWindow() }
+
+        // `--demo --screenshots <папка>`: снять экраны в обеих темах и выйти.
+        let args = CommandLine.arguments
+        if isDemo, let index = args.firstIndex(of: "--screenshots"), index + 1 < args.count {
+            showWindow()
+            guard let window = window?.window else { exit(1) }
+            Task { exit(await Screenshots.run(model: model, window: window, into: URL(fileURLWithPath: args[index + 1]))) }
+        }
     }
 
     // MARK: - окно
@@ -218,6 +229,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func syncRecording() {
         model.isRecording = recordingDir != nil
         model.recordingStartedAt = recordingStart
+        if recordingDir == nil { model.recordingLevels = [] }
         model.refresh()
         refreshTitle()
     }

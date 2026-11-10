@@ -60,6 +60,9 @@ private final class TrackWriter {
     private var file: AVAudioFile?
     private var converter: AVAudioConverter?
     private(set) var lastError: Error?
+    /// Громкость дорожки 0…1, не чаще 20 раз в секунду (вызывается с очереди звука).
+    var onLevel: ((Float) -> Void)?
+    private var lastLevelAt = 0.0
 
     init(url: URL, clock: RecordingClock) {
         self.url = url
@@ -78,6 +81,7 @@ private final class TrackWriter {
         let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(sampleBuffer, at: 0, frameCount: Int32(frames),
                                                                    into: pcm.mutableAudioBufferList)
         guard status == noErr else { return }
+        reportLevel(pcm)
         do {
             if file == nil {
                 let settings: [String: Any] = [
@@ -104,6 +108,24 @@ private final class TrackWriter {
         } catch {
             lastError = error
         }
+    }
+
+    private func reportLevel(_ pcm: AVAudioPCMBuffer) {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard let onLevel, now - lastLevelAt >= 0.05, pcm.frameLength > 0 else { return }
+        lastLevelAt = now
+        let count = Int(pcm.frameLength)
+        var sum: Float = 0
+        if let samples = pcm.floatChannelData?[0] {
+            for index in 0..<count { sum += samples[index] * samples[index] }
+        } else if let samples = pcm.int16ChannelData?[0] {
+            for index in 0..<count { let value = Float(samples[index]) / 32768; sum += value * value }
+        } else {
+            return
+        }
+        // шкала в децибелах: −50 дБ и тише — ноль, 0 дБ — единица
+        let decibels = 10 * log10(max(sum / Float(count), 1e-10))
+        onLevel(min(max((decibels + 50) / 50, 0), 1))
     }
 
     private func writeSilence(frames: Int64, to file: AVAudioFile) throws {
@@ -161,6 +183,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Поток остановился сам (отозвали разрешение, сбой) — приложение завершает встречу.
     var onUnexpectedStop: ((Error) -> Void)?
+    /// Громкость микрофона 0…1, не чаще 20 раз в секунду, с очереди звука — для живой волны.
+    var onLevel: ((Float) -> Void)?
 
     var isRunning: Bool { stream != nil }
 
@@ -199,6 +223,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let clock = RecordingClock(startTime: CMClockGetTime(CMClockGetHostTimeClock()).seconds)
         system = TrackWriter(url: dir.appendingPathComponent("system.caf"), clock: clock)
         mic = TrackWriter(url: dir.appendingPathComponent("mic.caf"), clock: clock)
+        mic?.onLevel = { [weak self] level in self?.onLevel?(level) }
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         do {

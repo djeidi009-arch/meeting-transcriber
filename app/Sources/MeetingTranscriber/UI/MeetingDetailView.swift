@@ -4,67 +4,47 @@ import SwiftUI
 
 /// Выбранная встреча: у расшифрованной — плеер, summary, спикеры и транскрипт; у остальных — состояние.
 struct MeetingDetailView: View {
-    @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let item: MeetingItem
 
+    /// Встреча, которую видели в обработке, пока она открыта: когда дорасшифруется — всплеск частиц и каскад реплик.
+    @State private var watched: MeetingItem.ID?
+
     var body: some View {
-        if item.status == .ready {
-            MeetingScreen(item: item).id(item.id) // у каждой встречи свой плеер и своя прокрутка
-        } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    MeetingHeader(item: item, document: nil)
-                    state.card()
-                }
-                .padding(28)
-                .frame(maxWidth: 900, alignment: .leading)
-                .frame(maxWidth: .infinity)
-            }
-        }
-    }
-
-    @ViewBuilder private var state: some View {
-        switch item.status {
-        case .recording:
-            message("Идёт запись", "Когда запись остановится, встреча сама встанет в очередь на расшифровку.")
-        case .queued:
-            message("В очереди", "Расшифровка начнётся, как только закончится предыдущая.")
-        case .processing(let progress):
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Расшифровывается").font(.title3.weight(.semibold))
-                ForEach(ProcessingStage.allCases, id: \.self) { stage in
-                    let current = progress?.stage == stage
-                    HStack(spacing: 10) {
-                        Circle()
-                            .fill(current ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.quaternary))
-                            .frame(width: 10, height: 10)
-                        Text(stage.title)
-                            .fontWeight(current ? .semibold : .regular)
-                            .foregroundStyle(current ? .primary : .secondary)
-                        if current { ProgressView().controlSize(.small) }
+        Group {
+            if item.status == .ready {
+                MeetingScreen(item: item, reveal: watched == item.id).id(item.id) // у каждой встречи свой плеер и своя прокрутка
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        MeetingHeader(item: item, document: nil)
+                        MeetingStateView(item: item)
                     }
+                    .padding(28)
+                    .frame(maxWidth: 900, alignment: .leading)
+                    .frame(maxWidth: .infinity)
                 }
             }
-        case .ready:
-            EmptyView()
-        case .failed(let text):
-            VStack(alignment: .leading, spacing: 12) {
-                Label("Не удалось расшифровать", systemImage: "exclamationmark.triangle.fill")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.red)
-                Text(text)
-                    .textSelection(.enabled)
-                Button("Повторить") { model.retry(item) }
-                    .buttonStyle(AccentButtonStyle())
+        }
+        .transition(.opacity)
+        .animation(.easeOut(duration: 0.3), value: item.status == .ready)
+        .overlay {
+            if item.status == .ready && watched == item.id && !reduceMotion { ParticleBurst() }
+        }
+        .onAppear { watch(item) }
+        .onChange(of: item) { old, new in
+            if old.id != new.id { watched = nil }
+            watch(new)
+            guard new.status == .ready, watched == new.id else { return }
+            Task {
+                try? await Task.sleep(for: .seconds(ParticleBurst.duration + 1))
+                if watched == new.id { watched = nil }
             }
         }
     }
 
-    private func message(_ title: String, _ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.title3.weight(.semibold))
-            Text(text).foregroundStyle(.secondary)
-        }
+    private func watch(_ item: MeetingItem) {
+        if case .processing = item.status { watched = item.id }
     }
 }
 
@@ -132,6 +112,8 @@ struct MeetingHeader: View {
 private struct MeetingScreen: View {
     @Environment(AppModel.self) private var model
     let item: MeetingItem
+    /// Обработка только что закончилась: содержимое появляется каскадом, а не сразу.
+    let reveal: Bool
 
     @State private var player = PlayerModel()
     @State private var document: MeetingDocument?
@@ -153,6 +135,7 @@ private struct MeetingScreen: View {
                         }
                         SpeakersCard(document: document, rename: rename)
                     }
+                    .cascadeIn(order: 0, active: reveal)
                     .frame(width: 272)
                     transcript(document)
                 }
@@ -191,11 +174,12 @@ private struct MeetingScreen: View {
             ScrollView {
                 VStack(spacing: 16) {
                     SummaryCard(document: document, failed: item.summaryFailed) { model.resummarize(item) }
+                        .cascadeIn(order: 1, active: reveal)
                     TranscriptCard(document: document, currentLine: player.currentLine, seek: { start in
                         following = true
                         player.seek(to: start)
                         player.play()
-                    }, rename: rename)
+                    }, rename: rename, cascade: reveal)
                 }
                 .padding(.bottom, 24)
             }

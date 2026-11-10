@@ -27,6 +27,7 @@ struct RootView: View {
                 .labelStyle(.titleAndIcon)
         }
         .navigationTitle("Транскрибатор")
+        .importFlow()
     }
 
     @ViewBuilder private var detail: some View {

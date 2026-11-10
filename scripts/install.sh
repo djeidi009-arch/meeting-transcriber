@@ -1,5 +1,6 @@
 #!/bin/bash
-# Ставит собранное приложение в ~/Applications, пишет config.json и LaunchAgent (автозапуск при входе).
+# Ставит собранное приложение в ~/Applications, пишет config.json и LaunchAgent (автозапуск при входе,
+# с --background: окно при входе в систему не открывается).
 # Для проверки без изменений системы:
 #   MT_HOME=/tmp/x MT_SKIP_LAUNCHCTL=1 scripts/install.sh
 set -euo pipefail
@@ -77,6 +78,7 @@ cat > "$AGENT" <<PLIST
 	<key>ProgramArguments</key>
 	<array>
 		<string>$APP/Contents/MacOS/MeetingTranscriber</string>
+		<string>--background</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
