@@ -50,6 +50,8 @@ StoreTests.all()
 ConfigTests.all()
 QueueTests.all()
 AlignerTests.all()
+LibraryTests.all()
+DocumentTests.all()
 
 print("\(passed) checks passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

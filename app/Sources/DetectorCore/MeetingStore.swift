@@ -22,14 +22,14 @@ public final class MeetingStore {
         return "\(f.string(from: startedAt)) \(safeApp)"
     }
 
-    static func iso(_ date: Date) -> String {
+    public static func iso(_ date: Date) -> String {
         let f = ISO8601DateFormatter()
         f.timeZone = .current
         f.formatOptions = [.withInternetDateTime]
         return f.string(from: date)
     }
 
-    static func parseISO(_ s: String?) -> Date? {
+    public static func parseISO(_ s: String?) -> Date? {
         guard let s else { return nil }
         return ISO8601DateFormatter().date(from: s)
     }
@@ -89,7 +89,7 @@ public final class MeetingStore {
     /// (время конца — по последней записи в аудиофайлы) и возвращает папки с аудио без `meeting.md`.
     public func recoverPending(minDuration: TimeInterval = 15) -> [URL] {
         var result: [URL] = []
-        for dir in meetingDirs() {
+        for dir in allMeetings() {
             if fm.fileExists(atPath: dir.appendingPathComponent(Self.recordingMarker).path) {
                 let ended = lastAudioWrite(dir) ?? Date()
                 if !finishMeeting(dir, endedAt: ended, minDuration: minDuration) { continue }
@@ -104,30 +104,30 @@ public final class MeetingStore {
 
     /// Последние обработанные встречи (с `meeting.md`), новые первыми.
     public func recentMeetings(limit: Int = 5) -> [URL] {
-        Array(meetingDirs()
+        Array(allMeetings()
             .filter { fm.fileExists(atPath: $0.appendingPathComponent("meeting.md").path) }
             .prefix(limit))
     }
 
     /// Последняя встреча, для которой можно перегенерировать summary (есть `transcript.json`).
     public func lastMeetingWithTranscript() -> URL? {
-        meetingDirs().first { fm.fileExists(atPath: $0.appendingPathComponent("transcript.json").path) }
+        allMeetings().first { fm.fileExists(atPath: $0.appendingPathComponent("transcript.json").path) }
+    }
+
+    /// Все папки встреч (с `meta.json`), новые первыми. Папки транскриптов нет — пустой список.
+    public func allMeetings() -> [URL] {
+        guard let items = try? fm.contentsOfDirectory(at: outputDir, includingPropertiesForKeys: [.isDirectoryKey],
+                                                      options: [.skipsHiddenFiles]) else { return [] }
+        // meta.json читается один раз на папку: окно перечитывает список каждую секунду
+        let dated = items.filter { fm.fileExists(atPath: $0.appendingPathComponent(Self.metaFile).path) }
+            .map { (dir: $0, started: Self.parseISO(readMeta($0)?["startedAt"] as? String) ?? .distantPast) }
+        return dated.sorted { a, b in
+            if a.started != b.started { return a.started > b.started }
+            return a.dir.lastPathComponent > b.dir.lastPathComponent
+        }.map(\.dir)
     }
 
     // MARK: - внутреннее
-
-    /// Папки встреч (с `meta.json`), новые первыми.
-    private func meetingDirs() -> [URL] {
-        guard let items = try? fm.contentsOfDirectory(at: outputDir, includingPropertiesForKeys: [.isDirectoryKey],
-                                                      options: [.skipsHiddenFiles]) else { return [] }
-        let dirs = items.filter { fm.fileExists(atPath: $0.appendingPathComponent(Self.metaFile).path) }
-        return dirs.sorted { a, b in
-            let da = Self.parseISO(readMeta(a)?["startedAt"] as? String) ?? .distantPast
-            let db = Self.parseISO(readMeta(b)?["startedAt"] as? String) ?? .distantPast
-            if da != db { return da > db }
-            return a.lastPathComponent > b.lastPathComponent
-        }
-    }
 
     private func lastAudioWrite(_ dir: URL) -> Date? {
         ["mic.caf", "system.caf"].compactMap { name -> Date? in
@@ -135,7 +135,7 @@ public final class MeetingStore {
         }.max()
     }
 
-    func readMeta(_ dir: URL) -> [String: Any]? {
+    public func readMeta(_ dir: URL) -> [String: Any]? {
         guard let data = try? Data(contentsOf: dir.appendingPathComponent(Self.metaFile)) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }

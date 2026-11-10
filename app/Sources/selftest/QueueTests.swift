@@ -65,6 +65,32 @@ enum QueueTests {
             check(busyChanges.first == true && busyChanges.last == false, "оповещения о занятости: \(busyChanges)")
         }
 
+        test("очередь: снимок показывает идущее и ждущие, onChange — при постановке, старте и завершении") {
+            let root = tempDir("queue-snapshot")
+            let python = try makeFakePython(in: root, log: root.appendingPathComponent("log.txt"))
+            let lock = NSLock()
+            var seen: [ProcessingQueue.Snapshot] = []
+            var queue: ProcessingQueue!
+            queue = ProcessingQueue(pythonPath: python.path, projectDir: root,
+                                    onChange: { let s = queue.snapshot(); lock.lock(); seen.append(s); lock.unlock() },
+                                    onFinish: { _, _ in })
+            check(queue.snapshot() == ProcessingQueue.Snapshot(running: nil, pending: []), "пустая очередь — пустой снимок")
+            let a = ProcessingQueue.Job(dir: root.appendingPathComponent("A").standardizedFileURL, kind: .process)
+            let b = ProcessingQueue.Job(dir: root.appendingPathComponent("B").standardizedFileURL, kind: .resummarize)
+            queue.enqueue(a.dir)
+            queue.enqueue(b.dir, kind: .resummarize)
+            check(queue.waitUntilIdle(timeout: 10), "очередь отработала")
+            lock.lock(); let states = seen; lock.unlock()
+            typealias S = ProcessingQueue.Snapshot
+            check(states.contains(S(running: nil, pending: [a])) || states.contains(S(running: nil, pending: [a, b])),
+                  "постановка видна как ждущее задание: \(states)")
+            check(states.contains(S(running: a, pending: [b])), "A идёт, B ждёт: \(states)")
+            check(states.contains(S(running: b, pending: [])), "B идёт, очередь пуста: \(states)")
+            check(states.last == S(running: nil, pending: []), "после завершения снимок пуст: \(String(describing: states.last))")
+            check(states.count >= 6, "onChange на каждое изменение (2 постановки, 2 старта, 2 завершения): \(states.count)")
+            check(queue.snapshot() == S(running: nil, pending: []), "в конце очередь пуста")
+        }
+
         test("очередь: error.txt важнее stderr, нет python — понятная ошибка") {
             let root = tempDir("queue2")
             let log = root.appendingPathComponent("log.txt")

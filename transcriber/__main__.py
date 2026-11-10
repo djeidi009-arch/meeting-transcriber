@@ -20,13 +20,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         cfg = config.load()
-        if args.command == "process":
-            summary_error = pipeline.process(args.meeting_dir, cfg)
-            if summary_error:
-                print(" ".join(f"Summary не удалось сделать: {summary_error}".split()), file=sys.stderr)
-                return EXIT_SUMMARY_FAILED
-        else:
-            pipeline.resummarize(args.meeting_dir, cfg)
+        run = pipeline.process if args.command == "process" else pipeline.resummarize
+        summary_error = run(args.meeting_dir, cfg)
+        if summary_error:
+            print(" ".join(f"Summary не удалось сделать: {summary_error}".split()), file=sys.stderr)
+            return EXIT_SUMMARY_FAILED
     except KeyboardInterrupt:
         print("Обработка прервана", file=sys.stderr)
         return 1

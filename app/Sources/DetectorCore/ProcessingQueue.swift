@@ -8,6 +8,14 @@ public final class ProcessingQueue {
     public struct Job: Equatable {
         public let dir: URL
         public let kind: Kind
+        public init(dir: URL, kind: Kind) { self.dir = dir; self.kind = kind }
+    }
+
+    /// Что идёт и что ждёт — по этому снимку окно показывает «Расшифровывается» и «В очереди».
+    public struct Snapshot: Equatable {
+        public let running: Job?
+        public let pending: [Job]
+        public init(running: Job?, pending: [Job]) { self.running = running; self.pending = pending }
     }
 
     /// Код выхода `python -m transcriber process`: транскрипт готов, но summary не получилось.
@@ -25,6 +33,7 @@ public final class ProcessingQueue {
     private let extraPath: [String]
     private let logURL: URL?
     private let onBusyChange: (Bool) -> Void
+    private let onChange: () -> Void
     private let onFinish: (Job, Outcome) -> Void
 
     private let worker = DispatchQueue(label: "ru.local.meeting-transcriber.processing")
@@ -39,18 +48,25 @@ public final class ProcessingQueue {
     ///   (папка `claude`, Homebrew для ffmpeg) — у приложения из строки меню PATH минимальный.
     public init(pythonPath: String, projectDir: URL, extraPath: [String] = [], logURL: URL? = nil,
                 onBusyChange: @escaping (Bool) -> Void = { _ in },
+                onChange: @escaping () -> Void = {},
                 onFinish: @escaping (Job, Outcome) -> Void) {
         self.pythonPath = pythonPath
         self.projectDir = projectDir
         self.extraPath = extraPath
         self.logURL = logURL
         self.onBusyChange = onBusyChange
+        self.onChange = onChange
         self.onFinish = onFinish
     }
 
     public var isBusy: Bool {
         lock.lock(); defer { lock.unlock() }
         return running != nil || !pending.isEmpty
+    }
+
+    public func snapshot() -> Snapshot {
+        lock.lock(); defer { lock.unlock() }
+        return Snapshot(running: running, pending: pending)
     }
 
     /// Ставит папку в очередь; повтор того же задания, пока оно ждёт или идёт, игнорируется.
@@ -64,6 +80,7 @@ public final class ProcessingQueue {
         idle.enter()
         lock.unlock()
         if wasIdle { onBusyChange(true) }
+        onChange()
         worker.async { [self] in runNext(generation: gen) }
     }
 
@@ -91,6 +108,7 @@ public final class ProcessingQueue {
         let cancelled = gen != generation
         if !cancelled { running = job }
         lock.unlock()
+        onChange()
 
         if !cancelled {
             let outcome = execute(job)
@@ -99,6 +117,7 @@ public final class ProcessingQueue {
             running = nil
             current = nil
             lock.unlock()
+            onChange()
             if stillValid { onFinish(job, outcome) }
         }
 

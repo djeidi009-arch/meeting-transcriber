@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .models import Utterance
+from .userdata import UserData
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -30,9 +31,9 @@ def _duration(seconds: float) -> str:
     return f"{total} с"
 
 
-def transcript_text(utterances: list[Utterance]) -> str:
+def transcript_text(utterances: list[Utterance], user: UserData = UserData()) -> str:
     """Транскрипт строками `[чч:мм:сс] Спикер: текст` — вход для summary."""
-    return "\n".join(f"[{_timestamp(u.start)}] {u.speaker}: {u.text}" for u in utterances)
+    return "\n".join(f"[{_timestamp(u.start)}] {user.name(u.speaker)}: {u.text}" for u in utterances)
 
 
 def render_markdown(
@@ -41,9 +42,13 @@ def render_markdown(
     summary_error: str | None,
     utterances: list[Utterance],
     audio_duration: float | None = None,
+    user: UserData = UserData(),
 ) -> str:
-    """audio_duration — длина самой длинной дорожки; нужна, когда в meta.json нет времени конца."""
-    app = meta.get("app") or "Встреча"
+    """audio_duration — длина самой длинной дорожки; нужна, когда в meta.json нет времени конца.
+
+    user — правки из user.json: название вместо meta.app, имена вместо меток спикеров.
+    """
+    app = user.title or meta.get("app") or "Встреча"
     started = _parse_time(meta.get("startedAt"))
     ended = _parse_time(meta.get("endedAt"))
 
@@ -72,6 +77,6 @@ def render_markdown(
         lines.append("Речь не распознана")
     else:
         for u in utterances:
-            lines.append(f"**[{_timestamp(u.start)}] {u.speaker}:** {u.text}")
+            lines.append(f"**[{_timestamp(u.start)}] {user.name(u.speaker)}:** {u.text}")
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"

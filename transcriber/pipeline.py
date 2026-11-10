@@ -8,10 +8,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
-from . import audio, merge, render
+from . import audio, merge, progress, render, userdata
 from .config import Config
 from .models import Segment, Turn, Utterance
 from .summary import SummaryError
+from .userdata import UserData
 
 TRACKS = ("mic", "system")
 
@@ -65,11 +66,14 @@ def _write_atomic(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def _summarize(utterances: list[Utterance], cfg: Config, summarize: SummarizeFn) -> tuple[str | None, str | None]:
+def _summarize(
+    meeting_dir: Path, utterances: list[Utterance], user: UserData, cfg: Config, summarize: SummarizeFn
+) -> tuple[str | None, str | None]:
+    progress.write(meeting_dir, progress.SUMMARY)
     if not utterances:
         return None, None
     try:
-        return summarize(render.transcript_text(utterances), cfg.claude_path, cfg.summary_timeout_sec), None
+        return summarize(render.transcript_text(utterances, user), cfg.claude_path, cfg.summary_timeout_sec), None
     except SummaryError as exc:
         return None, exc.reason
 
@@ -98,6 +102,7 @@ def _process(
 ) -> str | None:
     if (meeting_dir / ".recording").exists():
         raise ProcessingError("Запись ещё идёт (есть маркер .recording)")
+    progress.write(meeting_dir, progress.EXTRACT)
     meta = _read_meta(meeting_dir)
     _import_source(meeting_dir, meta)
 
@@ -105,10 +110,8 @@ def _process(
     turns: list[Turn] = []
     duration = 0.0
     with tempfile.TemporaryDirectory(prefix="transcriber-") as tmp:
-        for track in TRACKS:
-            src = _track_source(meeting_dir, track)
-            if src is None:
-                continue
+        sources = [(track, src) for track in TRACKS if (src := _track_source(meeting_dir, track))]
+        for index, (track, src) in enumerate(sources):
             wav = Path(tmp) / f"{track}.wav"
             has_sound = audio.to_wav16k(src, wav)
             duration = max(duration, audio.wav_duration(wav))
@@ -116,10 +119,13 @@ def _process(
                 audio.to_m4a(src, meeting_dir / f"{track}.m4a")
             if not has_sound:
                 continue
+            progress.write(meeting_dir, progress.ASR, index / len(sources))
             segments[track] = asr(wav, cfg.language)
             if track == "system" and segments[track]:
+                progress.write(meeting_dir, progress.DIARIZE)
                 turns = diarize(wav)
 
+    progress.write(meeting_dir, progress.DIARIZE)  # склейка — тоже этап «Спикеры», даже если диаризации не было
     system_u = merge.assign_speakers(segments["system"], turns)
     mic_u = merge.drop_echo(merge.mic_utterances(segments["mic"]), system_u)
     utterances = merge.combine(mic_u, system_u)
@@ -132,10 +138,11 @@ def _process(
             indent=1,
         ),
     )
-    summary_text, summary_error = _summarize(utterances, cfg, summarize)
+    user = userdata.load(meeting_dir)
+    summary_text, summary_error = _summarize(meeting_dir, utterances, user, cfg, summarize)
     _write_atomic(
         meeting_dir / "meeting.md",
-        render.render_markdown(meta, summary_text, summary_error, utterances, audio_duration=duration),
+        render.render_markdown(meta, summary_text, summary_error, utterances, audio_duration=duration, user=user),
     )
 
     (meeting_dir / "error.txt").unlink(missing_ok=True)
@@ -181,10 +188,15 @@ def process(
     except Exception as exc:
         _record_error(meeting_dir, exc)
         raise
+    finally:
+        progress.clear(meeting_dir)
 
 
-def resummarize(meeting_dir: Path, cfg: Config, summarize: SummarizeFn | None = None) -> None:
-    """Заново сделать summary по transcript.json и перезаписать meeting.md."""
+def resummarize(meeting_dir: Path, cfg: Config, summarize: SummarizeFn | None = None) -> str | None:
+    """Заново сделать summary по transcript.json и перезаписать meeting.md.
+
+    Как и process, возвращает причину сбоя summary или None.
+    """
     meeting_dir = Path(meeting_dir)
     _check_dir(meeting_dir)
     try:
@@ -195,10 +207,15 @@ def resummarize(meeting_dir: Path, cfg: Config, summarize: SummarizeFn | None = 
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ProcessingError("Нет транскрипта (transcript.json): сначала нужна обработка встречи") from exc
 
-    summary_text, summary_error = _summarize(utterances, cfg, summarize or _default_summarize)
-    _write_atomic(
-        meeting_dir / "meeting.md",
-        render.render_markdown(_read_meta(meeting_dir), summary_text, summary_error, utterances, audio_duration=duration),
-    )
-    if summary_error:
-        raise ProcessingError(f"Summary не удалось сделать: {summary_error}")
+    user = userdata.load(meeting_dir)
+    try:
+        summary_text, summary_error = _summarize(meeting_dir, utterances, user, cfg, summarize or _default_summarize)
+        _write_atomic(
+            meeting_dir / "meeting.md",
+            render.render_markdown(
+                _read_meta(meeting_dir), summary_text, summary_error, utterances, audio_duration=duration, user=user
+            ),
+        )
+    finally:
+        progress.clear(meeting_dir)
+    return summary_error

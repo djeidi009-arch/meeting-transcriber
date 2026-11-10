@@ -279,3 +279,130 @@ def test_process_imported_missing_file_fails_in_russian(tmp_path):
     with pytest.raises(ProcessingError, match="Файл не найден"):
         run(d, Fakes())
     assert "Файл не найден" in (d / "error.txt").read_text()
+
+
+def stage_spy(monkeypatch) -> list[str]:
+    """Этапы, которые обработка записала в progress.json, по порядку."""
+    from transcriber import progress
+
+    stages: list[str] = []
+    real = progress.write
+
+    def spy(meeting_dir, stage, fraction=None):
+        stages.append(stage)
+        real(meeting_dir, stage, fraction)
+
+    monkeypatch.setattr(progress, "write", spy)
+    return stages
+
+
+def stage_on_disk(d: Path) -> str:
+    return json.loads((d / "progress.json").read_text())["stage"]
+
+
+def test_process_reports_stages_in_order_and_removes_progress(tmp_path, monkeypatch):
+    d = meeting(tmp_path)
+    stages = stage_spy(monkeypatch)
+    seen: dict[str, str] = {}
+    fakes = Fakes()
+
+    def asr(wav, language):
+        seen["asr"] = stage_on_disk(d)
+        return fakes.asr(wav, language)
+
+    def diarize(wav):
+        seen["diarize"] = stage_on_disk(d)
+        return fakes.diarize(wav)
+
+    def summarize(transcript, claude_path, timeout):
+        seen["summary"] = stage_on_disk(d)
+        return fakes.summarize(transcript, claude_path, timeout)
+
+    process(d, Config(), asr=asr, diarize=diarize, summarize=summarize)
+    assert seen == {"asr": "asr", "diarize": "diarize", "summary": "summary"}
+    assert stages[0] == "extract"
+    order = ["extract", "asr", "diarize", "summary"]
+    assert sorted(set(stages), key=order.index) == order
+    assert [order.index(s) for s in stages] == sorted(order.index(s) for s in stages)  # назад не идёт
+    assert not (d / "progress.json").exists()
+
+
+def test_process_error_removes_progress(tmp_path):
+    d = meeting(tmp_path)
+    fakes = Fakes()
+    seen: list[bool] = []
+
+    def broken_asr(wav, language):
+        seen.append((d / "progress.json").exists())
+        raise RuntimeError("сбой")
+
+    with pytest.raises(RuntimeError):
+        process(d, Config(), asr=broken_asr, diarize=fakes.diarize, summarize=fakes.summarize)
+    assert seen == [True]
+    assert not (d / "progress.json").exists() and (d / "error.txt").exists()
+
+
+def test_process_on_done_meeting_writes_no_progress(tmp_path, monkeypatch):
+    d = meeting(tmp_path)
+    run(d, Fakes())
+    stages = stage_spy(monkeypatch)
+    run(d, Fakes())
+    assert stages == []
+
+
+def test_resummarize_reports_only_summary_stage(tmp_path, monkeypatch):
+    d = meeting(tmp_path)
+    run(d, Fakes())
+    stages = stage_spy(monkeypatch)
+    assert resummarize(d, Config(), summarize=Fakes(summary="### Кратко\nЕщё раз.").summarize) is None
+    assert stages == ["summary"]
+    assert not (d / "progress.json").exists()
+
+
+def test_resummarize_summary_failure_exits_2_and_keeps_transcript(tmp_path, monkeypatch, capsys):
+    from transcriber import __main__ as cli
+    from transcriber import pipeline
+
+    d = meeting(tmp_path)
+    run(d, Fakes())
+    before = (d / "transcript.json").read_text()
+    monkeypatch.setattr(pipeline, "_default_summarize", Fakes(summary=SummaryError("claude не ответил")).summarize)
+    code = cli.main(["resummarize", str(d)])
+    assert code == cli.EXIT_SUMMARY_FAILED == 2
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "claude не ответил" in err[0]
+    assert (d / "transcript.json").read_text() == before
+    md = (d / "meeting.md").read_text()
+    assert "Summary не удалось сделать: claude не ответил" in md and "Я согласен" in md
+    assert not (d / "progress.json").exists() and not (d / "error.txt").exists()
+
+
+def test_user_json_title_and_names_survive_process_and_resummarize(tmp_path):
+    d = meeting(tmp_path)
+    (d / "user.json").write_text(
+        json.dumps({"title": "Планёрка по релизу", "speakers": {"Спикер 1": "Аня", "Я": "Никита"}}, ensure_ascii=False)
+    )
+    fakes = Fakes()
+    run(d, fakes)
+    for step in ("process", "resummarize"):
+        md = (d / "meeting.md").read_text()
+        assert md.startswith("# Планёрка по релизу — 23.10.2026 15:30"), step
+        assert "**[00:00:00] Аня:** Давайте начнём встречу" in md, step
+        assert "**[00:00:03] Никита:** Я согласен" in md, step
+        assert "**[00:00:05] Спикер 2:** Отлично" in md, step
+        assert "Спикер 1" not in md, step
+        assert "Никита: Я согласен" in fakes.summary_inputs[-1], step
+        if step == "process":
+            resummarize(d, Config(), summarize=fakes.summarize)
+    assert len(fakes.summary_inputs) == 2
+    data = json.loads((d / "transcript.json").read_text())
+    assert [u["speaker"] for u in data["utterances"]] == ["Спикер 1", "Я", "Спикер 2"]  # метки не переписаны
+    assert json.loads((d / "user.json").read_text())["title"] == "Планёрка по релизу"
+
+
+def test_broken_user_json_changes_nothing(tmp_path):
+    d = meeting(tmp_path)
+    (d / "user.json").write_text("{не json")
+    run(d, Fakes())
+    md = (d / "meeting.md").read_text()
+    assert md.startswith("# Zoom — 23.10.2026 15:30") and "**[00:00:00] Спикер 1:**" in md

@@ -47,3 +47,16 @@ def test_duration_from_meta_wins_over_audio():
 def test_duration_without_end_time_uses_longest_track():
     md = render_markdown({**META, "endedAt": None}, None, None, [Utterance(0.0, 40.0, "Я", "Привет")], audio_duration=49.7)
     assert "Длительность: 50 с" in md
+
+
+def test_user_title_and_speaker_names_are_applied():
+    from transcriber.render import transcript_text
+    from transcriber.userdata import UserData
+
+    user = UserData(title="Планёрка по релизу", speakers={"Спикер 1": "Аня"})
+    utterances = [Utterance(5.0, 9.0, "Спикер 1", "Начнём."), Utterance(10.0, 11.0, "Я", "Да.")]
+    lines = render_markdown(META, None, None, utterances, user=user).splitlines()
+    assert lines[0] == "# Планёрка по релизу — 23.10.2026 15:30"
+    assert "**[00:00:05] Аня:** Начнём." in lines
+    assert "**[00:00:10] Я:** Да." in lines
+    assert transcript_text(utterances, user) == "[00:00:05] Аня: Начнём.\n[00:00:10] Я: Да."
