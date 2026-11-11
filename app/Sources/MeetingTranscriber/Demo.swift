@@ -87,11 +87,12 @@ extension AppModel {
                         refresh()
                         try? await Task.sleep(for: .seconds(1))
                     }
+                    // звук «извлечён» — дальше волна обработки показывает его настоящую форму
+                    if stage == .extract { await synthesizeAudio(dir, transcript: demoTranscript(dir)) }
                 }
             } while loop
             finishDemo(dir)
-            // у встречи со звуком (повтор summary) файлы не переписываем: их сейчас может играть плеер
-            if !demoAudioReady.contains(id) { await synthesizeAudio(dir) }
+            await synthesizeAudio(dir)
             try? FileManager.default.removeItem(at: progressFile)
             demoStatus[id] = nil
             refresh()
@@ -99,8 +100,8 @@ extension AppModel {
         if !loop { demoQueueTail = task }
     }
 
-    private func finishDemo(_ dir: URL) {
-        guard let item = items.first(where: { $0.id == dir.lastPathComponent }) else { return }
+    /// Транскрипт демо-встречи: свой, если есть (повтор summary), иначе выдуманный.
+    private func demoTranscript(_ dir: URL) -> Transcript {
         let lines: [(String, String)] = [
             ("Я", "Давайте коротко сверимся по «Маяку». Что с новой картой этажа?"),
             ("Спикер 1", "Карта готова, осталось проверить её на маленьких экранах."),
@@ -111,8 +112,12 @@ extension AppModel {
         let utterances = lines.enumerated().map { index, line in
             Utterance(start: Double(index) * 14 + 2, end: Double(index) * 14 + 13, speaker: line.0, text: line.1)
         }
-        // у встречи с транскриптом (повтор summary) текст не подменяем
-        let transcript = library.transcript(dir) ?? Transcript(utterances: utterances, duration: 72)
+        return library.transcript(dir) ?? Transcript(utterances: utterances, duration: 72)
+    }
+
+    private func finishDemo(_ dir: URL) {
+        guard let item = items.first(where: { $0.id == dir.lastPathComponent }) else { return }
+        let transcript = demoTranscript(dir)
         let summary = """
         ### Кратко
         Сверились по карте этажа «Маяка»: она готова, осталась проверка на маленьких экранах.
@@ -134,8 +139,10 @@ extension AppModel {
     }
     /// Звук демо-встречи: «голос» каждого спикера — тон своей высоты со слоговой огибающей.
     /// «Я» идёт в `mic.m4a`, собеседники — в `system.m4a`, как у настоящей записи.
-    private func synthesizeAudio(_ dir: URL) async {
-        guard let transcript = library.transcript(dir), !transcript.utterances.isEmpty else { return }
+    private func synthesizeAudio(_ dir: URL, transcript: Transcript? = nil) async {
+        // готовый звук не переписываем: его сейчас может играть плеер
+        guard !demoAudioReady.contains(dir.lastPathComponent),
+              let transcript = transcript ?? library.transcript(dir), !transcript.utterances.isEmpty else { return }
         await Task.detached {
             let rate = 16000.0
             for (file, mine) in [("mic", true), ("system", false)] {

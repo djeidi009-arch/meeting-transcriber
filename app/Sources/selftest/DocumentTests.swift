@@ -18,6 +18,9 @@ enum DocumentTests {
             check(MeetingDocument.shortTimecode(0) == "00:00" && MeetingDocument.shortTimecode(65.9) == "01:05", "мм:сс: \(MeetingDocument.shortTimecode(65.9))")
             check(MeetingDocument.shortTimecode(3725.4) == "1:02:05" && MeetingDocument.shortTimecode(-2) == "00:00", "от часа — ч:мм:сс: \(MeetingDocument.shortTimecode(3725.4))")
 
+            check(MeetingDocument.shortError("Файл не найден: /Users/demo/Movies/Демо для партнёров.mp4") == "Файл не найден: Демо для партнёров.mp4", "путь сжат до имени файла")
+            check(MeetingDocument.shortError("Нет речи: 1/2 дорожек") == "Нет речи: 1/2 дорожек" && MeetingDocument.shortError("/tmp/a.wav") == "a.wav" && MeetingDocument.shortError("Сбой /") == "Сбой /", "не путь — как есть")
+
             let doc = MeetingDocument(item: item(), transcript: transcript,
                                       summaryMarkdown: "### Кратко\nОбсудили **бюджет**.\n\n### Задачи\n- Аня: макеты\n* Я: смета\n  1. Третье", user: UserData())
             check(doc.lineIndex(at: 0) == nil && doc.lineIndex(at: 4.9) == nil, "до первой реплики — ничего")

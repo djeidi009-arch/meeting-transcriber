@@ -18,6 +18,16 @@ final class MainWindow {
         window.contentView = host
         window.center()
         window.setFrameAutosaveName("MainWindow")
+
+        // бесконечные анимации идут, только пока окно на виду и программа активна
+        let window = window
+        let update: @Sendable (Notification) -> Void = { _ in
+            MainActor.assumeIsolated { model.motionActive = window.occlusionState.contains(.visible) && NSApp.isActive }
+        }
+        let center = NotificationCenter.default
+        center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main, using: update)
+        center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main, using: update)
+        center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main, using: update)
     }
 
     func show() {

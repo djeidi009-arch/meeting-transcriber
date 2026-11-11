@@ -45,6 +45,7 @@ private struct MeetingRow: View {
     @Environment(AppModel.self) private var model
     let item: MeetingItem
     let snippets: [Snippet]
+    @State private var hovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -65,12 +66,15 @@ private struct MeetingRow: View {
                     .foregroundStyle(.secondary)
             }
             if let error = item.errorText {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                // коротко и спокойным цветом: красная пилюля уже сказала «Ошибка»; полный текст — в подсказке и на экране встречи
+                Text(MeetingDocument.shortError(error))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .help(error)
                 Button("Повторить") { model.retry(item) }
-                    .controlSize(.small)
+                    .buttonStyle(AccentButtonStyle(compact: true))
+                    .padding(.top, 2)
             }
             ForEach(snippets, id: \.start) { snippet in
                 Button {
@@ -96,5 +100,11 @@ private struct MeetingRow: View {
             }
         }
         .padding(.vertical, 4)
+        // подложка под курсором — в границах системной подсветки выбранной строки
+        .background(.primary.opacity(hovered && model.selection != item.id ? 0.05 : 0),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous).inset(by: -6))
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.15), value: hovered)
     }
 }

@@ -9,7 +9,7 @@
 | Команда | Что делает |
 |---------|------------|
 | `make setup` | `uv sync`: Python 3.12 + `.venv` |
-| `make check` | pytest (62) + Swift `selftest` (216), ~40 с — единственная проверка проекта |
+| `make check` | pytest (62) + Swift `selftest` (251), ~40 с — единственная проверка проекта |
 | `uv run pytest tests/test_merge.py` | один файл тестов |
 | `cd app && swift run selftest` | только Swift-проверки |
 | `make app` | `build/MeetingTranscriber.app` (release + Info.plist + иконка + ad-hoc подпись), ~50 с; одно предупреждение в `Recorder.swift` (non-Sendable capture) — норма |

@@ -92,6 +92,13 @@ public struct MeetingDocument: Equatable {
         return total >= 3600 ? "\(total / 3600):\(tail)" : tail
     }
 
+    /// Ошибка для списка встреч: полный путь в конце строки сжат до имени файла.
+    public static func shortError(_ text: String) -> String {
+        guard let slash = text.firstIndex(of: "/"), slash == text.startIndex || text[text.index(before: slash)] == " ",
+              text[text.index(after: slash)...].contains("/") else { return text }
+        return text[..<slash] + URL(fileURLWithPath: String(text[slash...])).lastPathComponent
+    }
+
     /// Номер реплики, которая звучит в этот момент: последняя, начавшаяся не позже `time`.
     public func lineIndex(at time: Double) -> Int? {
         lines.lastIndex { $0.start <= time }

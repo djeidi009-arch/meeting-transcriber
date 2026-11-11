@@ -15,7 +15,17 @@ enum Theme {
     static let page = dynamic(light: NSColor(white: 0.955, alpha: 1), dark: NSColor(white: 0.11, alpha: 1))
     static let card = dynamic(light: .white, dark: NSColor(white: 1, alpha: 0.07))
 
-    private static let speakerPalette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo]
+    /// Холодный нейтральный тон для мягких градиентов: рядом с лаймом не даёт грязи ни на белом, ни на графите.
+    static let cool = dynamic(light: NSColor(red: 0.50, green: 0.66, blue: 0.82, alpha: 1), dark: NSColor(red: 0.36, green: 0.56, blue: 0.72, alpha: 1))
+
+    /// Лайм для тех же градиентов: поверх графита жёлто-зелёный даёт оливковую грязь, поэтому в тёмной теме он холоднее.
+    static let glow = dynamic(light: NSColor(red: 0xD4 / 255, green: 0xF2 / 255, blue: 0x5A / 255, alpha: 1), dark: NSColor(red: 0.46, green: 0.80, blue: 0.58, alpha: 1))
+
+    /// Цвета спикеров приглушены: различимы между собой, но не спорят с акцентом.
+    private static let speakerPalette: [Color] = [
+        Color(red: 0.40, green: 0.54, blue: 0.76), Color(red: 0.56, green: 0.49, blue: 0.74), Color(red: 0.74, green: 0.48, blue: 0.58),
+        Color(red: 0.76, green: 0.58, blue: 0.40), Color(red: 0.34, green: 0.60, blue: 0.62), Color(red: 0.44, green: 0.46, blue: 0.66),
+    ]
 
     /// Цвет спикера стабилен по метке (между запусками тоже — поэтому не hashValue); «Я» — всегда акцент.
     static func speakerColor(_ label: String) -> Color {
@@ -78,6 +88,8 @@ struct Pill: View {
 /// Пилюля статуса встречи; у готовой встречи пилюли нет.
 struct StatusPill: View {
     let item: MeetingItem
+    /// В шапке записи таймер не нужен: он крупно стоит в карточке.
+    var timer = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -91,7 +103,7 @@ struct StatusPill: View {
                         .font(.system(size: 7))
                         .symbolEffect(.pulse, isActive: !reduceMotion)
                     Text(item.status.title)
-                    if let start = item.startedAt {
+                    if timer, let start = item.startedAt {
                         Text(timerInterval: start...Date.distantFuture, countsDown: false).monospacedDigit()
                     }
                 }
@@ -113,16 +125,65 @@ struct StatusPill: View {
     }
 }
 
-/// Основная кнопка: лаймовая, с графитовым текстом.
+/// Основная кнопка: лаймовая, с графитовым текстом. `compact` — для боковой панели.
 struct AccentButtonStyle: ButtonStyle {
+    var compact = false
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.body.weight(.semibold))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .font((compact ? Font.callout : .body).weight(.semibold))
+            .padding(.horizontal, compact ? 11 : 16)
+            .padding(.vertical, compact ? 4 : 8)
             .foregroundStyle(Theme.onAccent)
             .background(Theme.accent.opacity(configuration.isPressed ? 0.75 : 1), in: Capsule())
             .contentShape(Capsule())
+            .buttonFeel(pressed: configuration.isPressed)
+    }
+}
+
+/// Круглая кнопка-значок без фона: подложка появляется под курсором.
+struct IconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .contentShape(Circle())
+            .buttonFeel(pressed: configuration.isPressed, hoverFill: true)
+    }
+}
+
+/// Главная кнопка плеера: при нажатии сплющивается, при отпускании пружинит обратно.
+struct SpringyButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.buttonFeel(pressed: configuration.isPressed, springy: true)
+    }
+}
+
+/// Отклик кнопки: наведение и нажатие. При «Уменьшении движения» вместо сжатия — затемнение.
+private struct ButtonFeel: ViewModifier {
+    let pressed: Bool
+    var springy = false
+    var hoverFill = false
+    @State private var hovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var enabled
+
+    func body(content: Content) -> some View {
+        let squash: CGSize = reduceMotion || !pressed ? CGSize(width: 1, height: 1)
+            : springy ? CGSize(width: 0.96, height: 0.86) : CGSize(width: 0.97, height: 0.97)
+        content
+            .background(.primary.opacity(hoverFill && hovered && enabled ? (pressed ? 0.14 : 0.08) : 0), in: Circle())
+            .brightness(!hoverFill && hovered && enabled && !pressed ? -0.05 : 0)
+            .opacity(reduceMotion && pressed ? 0.7 : 1)
+            .scaleEffect(squash)
+            // сжатие быстрое, возврат — с отскоком только у пружинящей кнопки
+            .animation(pressed ? .easeOut(duration: 0.1) : springy ? .spring(duration: 0.4, bounce: 0.4) : .easeOut(duration: 0.18), value: pressed)
+            .animation(.easeOut(duration: 0.15), value: hovered)
+            .onHover { hovered = $0 }
+    }
+}
+
+private extension View {
+    func buttonFeel(pressed: Bool, springy: Bool = false, hoverFill: Bool = false) -> some View {
+        modifier(ButtonFeel(pressed: pressed, springy: springy, hoverFill: hoverFill))
     }
 }
 

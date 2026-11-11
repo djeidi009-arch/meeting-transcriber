@@ -12,14 +12,12 @@ private struct CascadeIn: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        let still = shown || reduceMotion
-        // дальние реплики не ждут дольше полутора секунд
+        // каскад ждёт своей очереди в финале обработки; шаг 0,04 с, не больше 12 шагов — вся цепочка короче 0,8 с
         let animation = reduceMotion ? Animation.easeOut(duration: 0.3)
-            : .spring(duration: 0.6, bounce: 0.25).delay(0.25 + Double(min(order, 18)) * 0.07)
+            : .timingCurve(0.16, 1, 0.3, 1, duration: 0.3).delay(Finale.cascadeDelay + Double(min(order, 12)) * 0.04)
         content
             .opacity(shown ? 1 : 0)
-            .offset(y: still ? 0 : 22)
-            .blur(radius: still ? 0 : 8)
+            .offset(y: shown || reduceMotion ? 0 : 24)
             // своя анимация ближе к элементу, чем анимации экрана, — иначе те её перебивают
             .animation(animation, value: shown)
             .onAppear { shown = true }
@@ -31,4 +29,13 @@ extension View {
     func cascadeIn(order: Int, active: Bool) -> some View {
         modifier(CascadeIn(order: order, active: active))
     }
+}
+
+/// Финал обработки, по очереди: отметка последнего шага → уходит текст → карточка сжимается в плеер → поднимается содержимое → всплеск.
+enum Finale {
+    static let check = 0.45  // последний шаг отмечен, волна застыла: вдох перед сжатием
+    static let clear = 0.2   // содержимое карточки обработки гаснет, остаётся одна волна
+    static let collapse = 0.55 // карточка обработки сжимается в карточку плеера, форма сплющивается в линию записи
+    static let settle = 0.7    // из линии вырастают штрихи волны плеера, проявляется управление
+    static let cascadeDelay = 0.3 // содержимое поднимается на освободившееся место, когда карточка уже почти сжалась
 }

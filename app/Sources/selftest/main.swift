@@ -52,6 +52,7 @@ QueueTests.all()
 AlignerTests.all()
 LibraryTests.all()
 DocumentTests.all()
+WaveTests.all()
 
 print("\(passed) checks passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

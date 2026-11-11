@@ -7,7 +7,6 @@ import Observation
 @MainActor @Observable
 final class PlayerModel {
     static let rates: [Float] = [1, 1.5, 2]
-    static let waveformBars = 220
 
     let player = AVPlayer()
     var currentTime = 0.0
@@ -28,14 +27,14 @@ final class PlayerModel {
 
     @ObservationIgnored private var observer: Any?
 
-    func load(item: MeetingItem) async {
+    func load(item: MeetingItem, noteMissingVideo: Bool = true) async {
         let fm = FileManager.default
         let tracks = ["mic.m4a", "system.m4a"].map { item.dir.appendingPathComponent($0) }.filter { fm.fileExists(atPath: $0.path) }
         var video: URL?
         if let source = item.sourceFile {
             if fm.fileExists(atPath: source.path) {
                 if (try? await AVURLAsset(url: source).loadTracks(withMediaType: .video).isEmpty) == false { video = source }
-            } else if ["mp4", "mov", "m4v", "mkv", "webm", "avi"].contains(source.pathExtension.lowercased()) {
+            } else if noteMissingVideo, ["mp4", "mov", "m4v", "mkv", "webm", "avi"].contains(source.pathExtension.lowercased()) {
                 missingVideo = source.path
             }
         }
@@ -75,17 +74,9 @@ final class PlayerModel {
         }
         isLoaded = true
 
-        // волна — по дорожкам из папки встречи (у видео звук тот же); столбик берёт громкую из сторон
-        var merged: [Float] = []
-        for url in tracks.isEmpty ? [video].compactMap({ $0 }) : tracks {
-            guard let samples = try? await WaveformAnalyzer().samples(fromAudioAt: url, count: Self.waveformBars) else { continue }
-            // анализатор отдаёт 0 — громко, 1 — тишина
-            let loud = samples.map { 1 - min(max($0, 0), 1) }
-            merged = merged.isEmpty ? loud : zip(merged, loud).map(max)
-        }
-        // самая громкая часть — во всю высоту: тихая запись не должна выглядеть ровной линией
-        let peak = merged.max() ?? 0
-        if !Task.isCancelled { levels = peak > 0 ? merged.map { $0 / peak } : merged }
+        // волна — по дорожкам из папки встречи (у видео звук тот же)
+        let fresh = await WaveLevels.load(tracks.isEmpty ? [video].compactMap { $0 } : tracks)
+        if !Task.isCancelled, !fresh.isEmpty { levels = fresh }
     }
 
     func stop() {
@@ -115,5 +106,21 @@ final class PlayerModel {
     private func updateLine() {
         let line = document?.lineIndex(at: currentTime)
         if line != currentLine { currentLine = line }
+    }
+}
+
+/// Форма звука для волны: громкость по ходу записи, 0…1. Считает DSWaveformImage на своей фоновой очереди.
+enum WaveLevels {
+    static func load(_ files: [URL]) async -> [Float] {
+        var merged: [Float] = []
+        for url in files {
+            guard let samples = try? await WaveformAnalyzer().samples(fromAudioAt: url, count: WaveBars.count) else { continue }
+            // анализатор отдаёт 0 — громко, 1 — тишина; столбик берёт громкую из сторон
+            let loud = samples.map { 1 - min(max($0, 0), 1) }
+            merged = merged.isEmpty ? loud : zip(merged, loud).map(max)
+        }
+        // самая громкая часть — во всю высоту: тихая запись не должна выглядеть ровной линией
+        let peak = merged.max() ?? 0
+        return peak > 0 ? merged.map { $0 / peak } : []
     }
 }
